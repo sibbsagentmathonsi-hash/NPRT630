@@ -231,6 +231,9 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
   return (
     <div className="modal-overlay">
       <div className="modal-content" style={{ maxWidth: '520px' }}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Close login dialog" title="Close">
+          <Icon name="x" size={18} />
+        </button>
         {!isFirstTimeMode ? (
           <div>
             {/* Top Navigation Tabs */}
