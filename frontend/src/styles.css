@@ -798,6 +798,11 @@ body {
   stroke-width: 1.8;
 }
 
+.light .app-brand-mark-icon,
+.light .boot-mark-icon {
+  color: var(--bg-surface);
+}
+
 .admin-welcome .welcome-copy h1 em {
   color: var(--accent);
 }
