@@ -37,6 +37,117 @@ A full-stack inventory management demo for small and medium-sized retail busines
 └── README.md
 ```
 
+## Product snapshots
+
+These diagrams provide a quick visual snapshot of how the application is structured and how a request moves through the system.
+
+### System architecture
+
+```mermaid
+flowchart LR
+	User[Store user] --> UI[React role workspace]
+	UI --> Auth[JWT authentication]
+	UI --> API[Express API]
+	API --> Guard[Role authorization]
+	Guard --> Domain[Inventory and procurement modules]
+	Domain --> DB[(PostgreSQL)]
+	Domain --> Cache[(Redis infrastructure)]
+	Domain --> Audit[Stock movement and security audit logs]
+	API --> Fallback[In-memory demo store]
+	Fallback -. used when PostgreSQL is unavailable .-> Domain
+```
+
+### Role workspace snapshot
+
+```mermaid
+flowchart TB
+	Portal[SyncStock]
+	Portal --> Admin[Admin portal<br/>Employees, warehouses, policies, audit logs]
+	Portal --> Manager[Manager workspace<br/>KPIs, forecasts, suppliers, purchase orders]
+	Portal --> Cashier[Cashier workspace<br/>POS sales, returns, receipts]
+	Portal --> Warehouse[Warehouse workspace<br/>Receiving, cycle counts, fulfilment]
+```
+
+### Access matrix
+
+| Workspace capability | Admin | Manager | Cashier | Warehouse |
+| --- | :---: | :---: | :---: | :---: |
+| Manage employees and security policies | Yes | No | No | No |
+| View operational dashboard | No | Yes | No | No |
+| Create sales and returns | No | Yes | Yes | No |
+| Receive stock and perform cycle counts | No | Yes | No | Yes |
+| Approve and manage purchase orders | No | Yes | No | Receive only |
+| Manage reserved online orders | No | Yes | Yes | Yes |
+
+## How it works
+
+### 1. Authentication and access control
+
+1. A user signs in with an email address or Employee ID.
+2. The backend validates the credentials and signs an 8-hour JWT.
+3. The frontend stores the session locally and requests the role workspace.
+4. Every protected API route checks the bearer token and role before continuing.
+5. Expired or invalid admin sessions are cleared and returned to the login dialog.
+
+```mermaid
+sequenceDiagram
+	actor User
+	participant UI as React app
+	participant API as Express API
+	participant Auth as Auth module
+
+	User->>UI: Submit Employee ID and password
+	UI->>API: POST /api/auth/login
+	API->>Auth: Authenticate credentials
+	Auth-->>API: Public user
+	API-->>UI: JWT + user profile
+	UI->>API: Protected request with Bearer token
+	API->>Auth: Verify signature and expiry
+	Auth-->>API: Role payload
+	API-->>UI: Role-scoped workspace data
+```
+
+### 2. Inventory synchronization
+
+The workspace endpoint returns a role-scoped snapshot containing products, categories, summary metrics, low-stock items, receipts, movements, suppliers, forecasts, purchase orders, and reserved orders. After a mutation, the relevant endpoint returns updated data and the frontend refreshes the workspace.
+
+```mermaid
+flowchart LR
+	Action[Sale, return, receiving, or count] --> Validate[Validate role and quantities]
+	Validate --> Mutate[Update inventory state]
+	Mutate --> Movement[Write stock movement audit record]
+	Mutate --> Snapshot[Return refreshed workspace snapshot]
+	Snapshot --> UI[Update role workspace]
+```
+
+### 3. Sales and returns
+
+Cashiers search the product catalogue, add items to the basket, and submit a sale. The API validates every line before deducting stock, creates a receipt, calculates VAT, and records the movement. A return reverses the stock movement and keeps the original transaction context.
+
+### 4. Receiving and cycle counts
+
+Warehouse staff record received quantities against a purchase order or receiving reference. Cycle counts compare physical quantities with system quantities, reconcile differences, and create an auditable adjustment movement.
+
+### 5. Procurement and forecasting
+
+Managers review low-stock alerts and forecast output, then generate or create purchase orders. Orders move through creation, approval, sending, cancellation, and receiving states. Forecast recommendations use recent demand, supplier lead time, safety stock, and reorder thresholds.
+
+```mermaid
+stateDiagram-v2
+	[*] --> Draft
+	Draft --> Approved: Manager approves
+	Approved --> Sent: Send to supplier
+	Sent --> PartiallyReceived: Receive some stock
+	Sent --> Received: Receive all stock
+	Draft --> Cancelled: Cancel
+	Approved --> Cancelled: Cancel
+	PartiallyReceived --> Received: Complete receipt
+```
+
+### 6. Online order reservations
+
+An online order first reserves available units so they cannot be oversold. The reservation can then be committed to fulfilment or released back into available stock. Each transition updates inventory availability and the movement trail.
+
 ## Prerequisites
 
 - Node.js 18 or later
