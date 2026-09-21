@@ -47,6 +47,12 @@ export default function AdminApp() {
     showToast('You have signed out of the admin portal', 'info');
   };
 
+  const handleSessionExpired = () => {
+    clearAdminSession();
+    setShowAuthModal(true);
+    showToast('Your admin session expired. Please sign in again.', 'error');
+  };
+
   useEffect(() => {
     document.documentElement.className = theme;
   }, [theme]);
@@ -163,7 +169,7 @@ export default function AdminApp() {
 
       <main className="app-main">
         {currentUser?.role === 'ADMIN' ? (
-          <AdminPortal apiBase={API_BASE} token={token} currentUser={currentUser} onNotify={showToast} />
+          <AdminPortal apiBase={API_BASE} token={token} currentUser={currentUser} onNotify={showToast} onSessionExpired={handleSessionExpired} />
         ) : (
           <div className="welcome-panel admin-welcome">
             <div className="welcome-grid" aria-hidden="true" />

@@ -16,7 +16,7 @@ const rolesList = [
   { role: 'WAREHOUSE_STAFF', label: 'Warehouse Staff (Receiving & Audits)' },
 ];
 
-export const AdminPortal = ({ apiBase, token, currentUser, onNotify }) => {
+export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionExpired }) => {
   const [activeTab, setActiveTab] = useState('employees'); // 'employees' | 'warehouses' | 'audit-logs' | 'policies'
   const [employees, setEmployees] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
@@ -75,6 +75,10 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify }) => {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
+      if (res.status === 401) {
+        onSessionExpired?.();
+        return;
+      }
       if (res.ok && data.employees) {
         setEmployees(data.employees);
       }
@@ -91,6 +95,10 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify }) => {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
+      if (res.status === 401) {
+        onSessionExpired?.();
+        return;
+      }
       if (res.ok && data.logs) {
         setAuditLogs(data.logs);
       }
@@ -125,6 +133,10 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify }) => {
 
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 401) {
+          onSessionExpired?.();
+          return;
+        }
         throw new Error(data.error || 'Failed to register employee');
       }
 
