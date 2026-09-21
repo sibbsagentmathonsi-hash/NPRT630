@@ -37,6 +37,8 @@ const initialWorkspace = {
 
 export default function WorkerApp() {
   const [theme, setTheme] = useState('dark');
+  const [isBooting, setIsBooting] = useState(true);
+  const [headerCompact, setHeaderCompact] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [token, setToken] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -141,6 +143,17 @@ export default function WorkerApp() {
   }, [theme]);
 
   useEffect(() => {
+    const bootTimer = window.setTimeout(() => setIsBooting(false), 850);
+    const handleScroll = () => setHeaderCompact(window.scrollY > 18);
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.clearTimeout(bootTimer);
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
     fetchDemoAccounts();
 
     const savedToken = localStorage.getItem(WORKER_TOKEN_KEY);
@@ -167,36 +180,32 @@ export default function WorkerApp() {
   }, [token, currentUser?.role]);
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <header className="app-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div
-            style={{
-              width: '34px',
-              height: '34px',
-              borderRadius: '8px',
-              background: 'linear-gradient(135deg, #2563eb, #16a34a)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#fff',
-              fontWeight: 800,
-              boxShadow: 'var(--shadow-sm)',
-            }}
-          >
-            SS
+    <div className={`worker-app ${headerCompact ? 'header-compact' : ''}`}>
+      {isBooting && (
+        <div className="boot-screen" role="status" aria-live="polite">
+          <div className="boot-mark">SS</div>
+          <div className="boot-copy">
+            <span>SyncStock</span>
+            <small>Initializing operations console</small>
           </div>
+          <div className="boot-progress"><span /></div>
+        </div>
+      )}
+
+      <header className={`app-header ${headerCompact ? 'is-compact' : ''}`}>
+        <div className="app-brand">
+          <div className="app-brand-mark">SS</div>
           <div>
-            <div style={{ fontWeight: 800, fontSize: '1rem', lineHeight: 1.1 }}>
+            <div className="app-brand-name">
               SyncStock <span style={{ color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600 }}>2.0</span>
             </div>
-            <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>Worker Operations</div>
+            <div className="app-brand-caption">Worker Operations / Live network</div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)', boxShadow: '0 0 8px var(--success)' }} />
+        <div className="app-header-actions">
+          <div className="sync-status">
+            <span className="sync-dot" />
             <span>{loading ? 'Syncing' : 'PostgreSQL Synced'}</span>
           </div>
 
@@ -270,31 +279,13 @@ export default function WorkerApp() {
       </header>
 
       {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            top: '74px',
-            right: '24px',
-            zIndex: 999,
-            padding: '12px 18px',
-            background: toast.type === 'success' ? 'var(--success-light)' : toast.type === 'error' ? 'var(--danger-light)' : 'var(--bg-surface)',
-            border: `1px solid ${toast.type === 'success' ? 'var(--success-border)' : toast.type === 'error' ? 'var(--danger-border)' : 'var(--border-color)'}`,
-            color: toast.type === 'success' ? 'var(--success-text)' : toast.type === 'error' ? 'var(--danger-text)' : 'var(--text-primary)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-lg)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            fontSize: '0.875rem',
-            fontWeight: 600,
-          }}
-        >
+        <div className={`toast toast-${toast.type}`}>
           <Icon name={toast.type === 'success' ? 'check-circle' : toast.type === 'error' ? 'alert-triangle' : 'zap'} size={18} />
           {toast.message}
         </div>
       )}
 
-      <main style={{ flex: 1, overflowY: 'auto' }}>
+      <main className="app-main">
         {currentUser?.role === 'MANAGER' ? (
           <ManagerWorkspace workspace={workspace} apiBase={API_BASE} token={token} onRefresh={fetchWorkspace} onNotify={showToast} />
         ) : currentUser?.role === 'CASHIER' ? (
@@ -302,12 +293,21 @@ export default function WorkerApp() {
         ) : currentUser?.role === 'WAREHOUSE_STAFF' ? (
           <WarehouseWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} />
         ) : (
-          <div style={{ textAlign: 'center', padding: '4rem' }}>
-            <h2>Worker Operations</h2>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}>Sign in with a manager, cashier, or warehouse account.</p>
-            <button className="btn btn-primary" onClick={() => setShowAuthModal(true)}>
-              <Icon name="lock" size={16} /> Open Worker Login
-            </button>
+          <div className="welcome-panel">
+            <div className="welcome-grid" aria-hidden="true" />
+            <div className="welcome-copy">
+              <span className="eyebrow"><span className="eyebrow-line" /> Store operations console</span>
+              <h1>Move stock with<br /><em>confidence.</em></h1>
+              <p>One focused workspace for sales, receiving, replenishment, and the decisions that keep a store moving.</p>
+              <button className="btn btn-primary btn-lg" onClick={() => setShowAuthModal(true)}>
+                <Icon name="lock" size={16} /> Open Worker Login
+              </button>
+            </div>
+            <div className="welcome-signal" aria-hidden="true">
+              <span>SYNC / 02</span>
+              <strong>READY</strong>
+              <i />
+            </div>
           </div>
         )}
       </main>
