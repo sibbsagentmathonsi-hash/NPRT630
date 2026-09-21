@@ -471,7 +471,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                   className="btn btn-secondary btn-sm"
                   style={{ justifyContent: 'space-between', borderColor: 'var(--purple-border)', background: 'var(--purple-light)' }}
                 >
-                  <span>🛡️ <strong>Sibusiso Mathonsi (ADMIN)</strong></span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}><Icon name="shield-check" size={15} /> <strong>Sibusiso Mathonsi (ADMIN)</strong></span>
                   <span className="badge badge-purple">Pass: @Arg3nt2003</span>
                 </button>
               </div>

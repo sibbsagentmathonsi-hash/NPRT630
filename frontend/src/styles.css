@@ -777,6 +777,19 @@ body {
   box-shadow: 5px 5px 0 rgba(251, 113, 133, 0.55);
 }
 
+.app-brand-mark-icon {
+  transform: rotate(-3deg);
+}
+
+.app-brand-mark-icon svg,
+.boot-mark-icon svg {
+  stroke-width: 1.8;
+}
+
+.admin-welcome .welcome-copy h1 em {
+  color: #fda4af;
+}
+
 .app-brand-name {
   font-size: 1.02rem;
   font-weight: 700;

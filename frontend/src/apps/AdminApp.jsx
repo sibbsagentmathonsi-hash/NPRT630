@@ -9,6 +9,8 @@ const ADMIN_USER_KEY = 'syncstock_admin_user';
 
 export default function AdminApp() {
   const [theme, setTheme] = useState('dark');
+  const [isBooting, setIsBooting] = useState(true);
+  const [headerCompact, setHeaderCompact] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [token, setToken] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -50,6 +52,17 @@ export default function AdminApp() {
   }, [theme]);
 
   useEffect(() => {
+    const bootTimer = window.setTimeout(() => setIsBooting(false), 850);
+    const handleScroll = () => setHeaderCompact(window.scrollY > 18);
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.clearTimeout(bootTimer);
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
     const savedToken = localStorage.getItem(ADMIN_TOKEN_KEY);
     const savedUser = localStorage.getItem(ADMIN_USER_KEY);
     if (savedToken && savedUser) {
@@ -68,34 +81,29 @@ export default function AdminApp() {
   }, []);
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <header className="app-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div
-            style={{
-              width: '34px',
-              height: '34px',
-              borderRadius: '8px',
-              background: 'linear-gradient(135deg, #7c3aed, #2563eb)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#fff',
-              fontWeight: 800,
-              boxShadow: 'var(--shadow-sm)',
-            }}
-          >
-            AD
+    <div className={`admin-app worker-app ${headerCompact ? 'header-compact' : ''}`}>
+      {isBooting && (
+        <div className="boot-screen" role="status" aria-live="polite">
+          <div className="boot-mark boot-mark-icon"><Icon name="shield-check" size={22} /></div>
+          <div className="boot-copy">
+            <span>SyncStock Admin</span>
+            <small>Securing governance console</small>
           </div>
+          <div className="boot-progress"><span /></div>
+        </div>
+
+      )}
+
+      <header className={`app-header ${headerCompact ? 'is-compact' : ''}`}>
+        <div className="app-brand">
+          <div className="app-brand-mark app-brand-mark-icon"><Icon name="shield-check" size={20} /></div>
           <div>
-            <div style={{ fontWeight: 800, fontSize: '1rem', lineHeight: 1.1 }}>
-              SyncStock <span style={{ color: 'var(--purple)', fontSize: '0.75rem', fontWeight: 600 }}>Admin</span>
-            </div>
-            <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>Employee Access Management</div>
+            <div className="app-brand-name">SyncStock <span style={{ color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600 }}>Admin</span></div>
+            <div className="app-brand-caption">Employee access / Governance</div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div className="app-header-actions">
           <button
             className="btn btn-secondary btn-sm"
             style={{ padding: '6px', borderRadius: 'var(--radius-md)' }}
@@ -147,40 +155,31 @@ export default function AdminApp() {
       </header>
 
       {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            top: '74px',
-            right: '24px',
-            zIndex: 999,
-            padding: '12px 18px',
-            background: toast.type === 'success' ? 'var(--success-light)' : toast.type === 'error' ? 'var(--danger-light)' : 'var(--bg-surface)',
-            border: `1px solid ${toast.type === 'success' ? 'var(--success-border)' : toast.type === 'error' ? 'var(--danger-border)' : 'var(--border-color)'}`,
-            color: toast.type === 'success' ? 'var(--success-text)' : toast.type === 'error' ? 'var(--danger-text)' : 'var(--text-primary)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-lg)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            fontSize: '0.875rem',
-            fontWeight: 600,
-          }}
-        >
+        <div className={`toast toast-${toast.type}`}>
           <Icon name={toast.type === 'success' ? 'check-circle' : toast.type === 'error' ? 'alert-triangle' : 'zap'} size={18} />
           {toast.message}
         </div>
       )}
 
-      <main style={{ flex: 1, overflowY: 'auto' }}>
+      <main className="app-main">
         {currentUser?.role === 'ADMIN' ? (
           <AdminPortal apiBase={API_BASE} token={token} currentUser={currentUser} onNotify={showToast} />
         ) : (
-          <div style={{ textAlign: 'center', padding: '4rem' }}>
-            <h2>Admin Portal</h2>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}>Sign in with an administrator account to manage employees and audit logs.</p>
-            <button className="btn btn-primary" onClick={() => setShowAuthModal(true)}>
-              <Icon name="shield-check" size={16} /> Open Admin Login
-            </button>
+          <div className="welcome-panel admin-welcome">
+            <div className="welcome-grid" aria-hidden="true" />
+            <div className="welcome-copy">
+              <span className="eyebrow"><span className="eyebrow-line" /> Governance and access</span>
+              <h1>Keep every<br /><em>door accountable.</em></h1>
+              <p>Manage employee access, warehouse ownership, and the audit trail behind every operational decision.</p>
+              <button className="btn btn-primary btn-lg" onClick={() => setShowAuthModal(true)}>
+                <Icon name="shield-check" size={16} /> Open Admin Login
+              </button>
+            </div>
+            <div className="welcome-signal" aria-hidden="true">
+              <span>SECURITY / TIER 1</span>
+              <strong>LOCKED</strong>
+              <i />
+            </div>
           </div>
         )}
       </main>
