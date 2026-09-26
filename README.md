@@ -461,11 +461,14 @@ Both the backend API and the Vite dev server start concurrently:
 
 ### System Administrator
 
+> [!CAUTION]
+> Admin credentials are **not** stored in this repository. Configure them via `backend/.env` before first run.
+
 | Field | Value |
 | :--- | :--- |
-| Email | `sibbs.agentmathonsi@gmail.com` |
+| Email | *(set via `ADMIN_EMAIL` in `backend/.env`)* |
 | Employee ID | `EMP-ADM-001` |
-| Password | `@Arg3nt2003` |
+| Password | *(set via `ADMIN_PASSWORD` in `backend/.env`)* |
 | Portal | `http://localhost:5175/admin.html` |
 
 The Administrator can create all other staff accounts (Managers, Cashiers, Warehouse Staff, Procurement Officers) directly within the Admin Portal. Each account receives a sector-prefixed Employee ID automatically:
@@ -595,7 +598,7 @@ Configure `backend/.env` (copy from `backend/.env.example`):
 | `DB_HOST` | `localhost` | PostgreSQL host |
 | `DB_PORT` | `5432` | PostgreSQL port |
 | `DB_USER` | `postgres` | Database user |
-| `DB_PASSWORD` | `M@th0nsi` | Database password |
+| `DB_PASSWORD` | *(set in `.env`)* | Database password |
 | `DB_NAME` | `inventory_db` | PostgreSQL schema / database name |
 | `JWT_SECRET` | `dev-secret-key` | HMAC-SHA256 signing key for session tokens |
 | `SMTP_HOST` | *(optional)* | SMTP relay for email OTP delivery |
