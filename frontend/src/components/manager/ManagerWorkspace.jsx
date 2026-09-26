@@ -1,11 +1,18 @@
 import React, { useState } from 'react';
 import { Icon } from '../common/Icons';
 
-export const ManagerWorkspace = ({ workspace, apiBase, token, onRefresh, onNotify }) => {
+export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify }) => {
   const [activeSubTab, setActiveSubTab] = useState('overview'); // 'overview' | 'forecasting' | 'suppliers' | 'catalog'
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [catalogSearch, setCatalogSearch] = useState('');
   const [generatingPo, setGeneratingPo] = useState(false);
+  const [productFormOpen, setProductFormOpen] = useState(false);
+  const [editingProductId, setEditingProductId] = useState(null);
+  const [productForm, setProductForm] = useState({
+    sku: '', barcode: '', name: '', category: 'General', supplierId: 1, stock: 0,
+    reorderPoint: 0, reorderQuantity: 1, unitCost: 0, price: 0,
+    warehouse: 'Johannesburg Central (JHB-01)', warehouseId: 'JHB-01', binLocation: 'A-01', imageUrl: '',
+  });
 
   const summary = workspace.summary || {
     dailySales: 1667.45,
@@ -113,6 +120,36 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, onRefresh, onNotif
       p.barcode.includes(catalogSearch);
     return matchCat && matchSearch;
   });
+
+  const openProductForm = (product = null) => {
+    setEditingProductId(product?.id || null);
+    setProductForm(product ? { ...product } : {
+      sku: '', barcode: '', name: '', category: 'General', supplierId: suppliers[0]?.id || 1, stock: 0,
+      reorderPoint: 0, reorderQuantity: 1, unitCost: 0, price: 0,
+      warehouse: 'Johannesburg Central (JHB-01)', warehouseId: 'JHB-01', binLocation: 'A-01', imageUrl: '',
+    });
+    setProductFormOpen(true);
+  };
+
+  const handleSaveProduct = async (event) => {
+    event.preventDefault();
+    try {
+      const res = await fetch(`${apiBase}/api/products${editingProductId ? `/${editingProductId}` : ''}`, {
+        method: editingProductId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(productForm),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to save product');
+      setProductFormOpen(false);
+      onNotify?.(editingProductId ? 'Product updated successfully' : 'Product added to the catalogue', 'success');
+      onRefresh();
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    }
+  };
+
+  const updateProductField = (field, value) => setProductForm((current) => ({ ...current, [field]: value }));
 
   return (
     <div style={{ padding: '1.5rem', maxWidth: '1400px', margin: '0 auto' }}>
@@ -550,7 +587,40 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, onRefresh, onNotif
                 ))}
               </select>
             </div>
+            <button className="btn btn-primary" onClick={() => openProductForm()}>
+              <Icon name="plus" size={16} /> Add Product
+            </button>
           </div>
+
+          {productFormOpen && (
+            <form className="card" onSubmit={handleSaveProduct} style={{ marginBottom: '1.25rem' }}>
+              <div className="card-header">
+                <h3 className="card-title">{editingProductId ? 'Edit Product' : 'Add Product'}</h3>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setProductFormOpen(false)}>Cancel</button>
+              </div>
+              <div className="grid-cols-4">
+                {[
+                  ['sku', 'SKU'], ['name', 'Product name'], ['category', 'Category'],
+                  ['stock', 'Opening stock'], ['reorderPoint', 'Reorder point'], ['reorderQuantity', 'Reorder quantity'],
+                  ['unitCost', 'Cost price'], ['price', 'Selling price'], ['warehouseId', 'Warehouse ID'], ['binLocation', 'Bin location'],
+                ].map(([field, label]) => (
+                  <label key={field} className="form-label">{label}
+                    <input className="form-input" required={!['barcode', 'warehouseId'].includes(field)} type={['stock', 'reorderPoint', 'reorderQuantity', 'unitCost', 'price'].includes(field) ? 'number' : 'text'} step={['unitCost', 'price'].includes(field) ? '0.01' : '1'} value={productForm[field] ?? ''} onChange={(e) => updateProductField(field, e.target.value)} />
+                  </label>
+                ))}
+                <label className="form-label">Product image URL
+                  <input className="form-input" type="url" placeholder="https://example.com/product.jpg" value={productForm.imageUrl ?? ''} onChange={(e) => updateProductField('imageUrl', e.target.value)} />
+                </label>
+                {editingProductId && (
+                  <label className="form-label">Barcode
+                    <input className="form-input form-input-mono" value={productForm.barcode ?? ''} readOnly />
+                  </label>
+                )}
+              </div>
+              {!editingProductId && <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', margin: '0.75rem 0' }}>A unique barcode will be generated automatically when this product is saved.</p>}
+              <button className="btn btn-primary" type="submit"><Icon name="check" size={16} /> Save Product</button>
+            </form>
+          )}
 
           <div className="table-container card" style={{ padding: 0 }}>
             <table className="custom-table">
@@ -564,6 +634,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, onRefresh, onNotif
                   <th>Stock on Hand</th>
                   <th>Available</th>
                   <th>Status</th>
+                  <th>Manage</th>
                 </tr>
               </thead>
               <tbody>
@@ -593,6 +664,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, onRefresh, onNotif
                         {p.availableStock} available
                       </span>
                     </td>
+                    <td><button className="btn btn-secondary btn-sm" onClick={() => openProductForm(p)}><Icon name="edit" size={14} /> Edit</button></td>
                     <td>
                       <span className={`badge ${p.status === 'Healthy' ? 'badge-success' : p.status === 'Watch' ? 'badge-warning' : 'badge-danger'}`}>
                         {p.status}

@@ -14,12 +14,16 @@ const rolesList = [
   { role: 'MANAGER', label: 'Store Manager (Analytics & PO Approval)' },
   { role: 'CASHIER', label: 'Cashier (POS & Returns)' },
   { role: 'WAREHOUSE_STAFF', label: 'Warehouse Staff (Receiving & Audits)' },
+  { role: 'PROCUREMENT_STAFF', label: 'Procurement Staff (Suppliers & Purchase Orders)' },
 ];
 
 export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionExpired }) => {
-  const [activeTab, setActiveTab] = useState('employees'); // 'employees' | 'warehouses' | 'audit-logs' | 'policies'
+  const [activeTab, setActiveTab] = useState('employees'); // 'employees' | 'products' | 'procurement' | 'warehouses' | 'audit-logs' | 'policies'
   const [employees, setEmployees] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSector, setSelectedSector] = useState('ALL');
@@ -33,6 +37,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
   const [regTempPass, setRegTempPass] = useState('TempPass123!');
   const [regLoading, setRegLoading] = useState(false);
   const [regSuccessData, setRegSuccessData] = useState(null);
+  const [newWarehouse, setNewWarehouse] = useState({ id: '', name: '', city: '', binsCount: 0, activeSkus: 0, capacityPct: 0, supervisor: 'Unassigned', status: 'STANDBY' });
 
   // Warehouse configuration mock data
   const [warehouses, setWarehouses] = useState([
@@ -107,10 +112,58 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
     }
   };
 
+  const fetchOperationalData = async () => {
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      const [productsRes, suppliersRes, ordersRes] = await Promise.all([
+        fetch(`${apiBase}/api/products`, { headers }),
+        fetch(`${apiBase}/api/suppliers`, { headers }),
+        fetch(`${apiBase}/api/purchase-orders`, { headers }),
+      ]);
+      const [productsData, suppliersData, ordersData] = await Promise.all([
+        productsRes.json(), suppliersRes.json(), ordersRes.json(),
+      ]);
+      if (productsRes.ok) setProducts(productsData.products || []);
+      if (suppliersRes.ok) setSuppliers(suppliersData.suppliers || []);
+      if (ordersRes.ok) setPurchaseOrders(ordersData.purchaseOrders || []);
+    } catch (err) {
+      console.error('Failed to load operational data', err);
+    }
+  };
+
+  const fetchWarehouses = async () => {
+    const res = await fetch(`${apiBase}/api/admin/warehouses`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (res.ok) setWarehouses(data.warehouses || []);
+  };
+
   useEffect(() => {
     fetchEmployees();
     fetchAuditLogs();
+    fetchOperationalData();
+    fetchWarehouses();
   }, [token]);
+
+  const saveNewWarehouse = async (event) => {
+    event.preventDefault();
+    const res = await fetch(`${apiBase}/api/admin/warehouses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(newWarehouse),
+    });
+    const data = await res.json();
+    if (!res.ok) return onNotify?.(data.error || 'Unable to save warehouse', 'error');
+    setWarehouses(data.warehouses || []);
+    setNewWarehouse({ id: '', name: '', city: '', binsCount: 0, activeSkus: 0, capacityPct: 0, supervisor: 'Unassigned', status: 'STANDBY' });
+    onNotify?.('Warehouse saved', 'success');
+  };
+
+  const deleteWarehouse = async (warehouse) => {
+    if (!window.confirm(`Delete warehouse ${warehouse.id}?`)) return;
+    const res = await fetch(`${apiBase}/api/admin/warehouses/${warehouse.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (res.ok) setWarehouses(data.warehouses || []);
+  };
 
   const handleRegisterEmployee = async (e) => {
     e.preventDefault();
@@ -175,6 +228,40 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
     }
   };
 
+  const handleUpdateEmployee = async (user, changes) => {
+    try {
+      const res = await fetch(`${apiBase}/api/admin/employees/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(changes),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update employee');
+      setEmployees(data.employees || employees);
+      fetchAuditLogs();
+      onNotify?.('Employee permissions updated', 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    }
+  };
+
+  const handleDeleteEmployee = async (user) => {
+    if (!window.confirm(`Delete ${user.name} (${user.employeeId})?`)) return;
+    try {
+      const res = await fetch(`${apiBase}/api/admin/employees/${user.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete employee');
+      setEmployees(data.employees || []);
+      fetchAuditLogs();
+      onNotify?.('Employee deleted', 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    }
+  };
+
   const handleResetPassword = async (user) => {
     if (!window.confirm(`Are you sure you want to reset password for ${user.name} (${user.employeeId})?`)) return;
     try {
@@ -202,7 +289,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
       });
       const data = await res.json();
       if (res.ok) {
-        onNotify?.(`Verification OTP sent to ${data.email} (Dev Code: ${data.code})`, 'success');
+        onNotify?.(data.code ? `Verification OTP sent to ${data.email} (Dev Code: ${data.code})` : `Verification OTP sent to ${data.email}. Check the inbox.`, 'success');
         fetchAuditLogs();
       } else {
         onNotify?.(data.error, 'error');
@@ -290,6 +377,18 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
           <Icon name="box" size={16} /> Multi-Warehouse Locations ({warehouses.length})
         </button>
         <button
+          className={`btn ${activeTab === 'products' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+          onClick={() => setActiveTab('products')}
+        >
+          <Icon name="barcode" size={16} /> Product Catalogue ({products.length})
+        </button>
+        <button
+          className={`btn ${activeTab === 'procurement' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+          onClick={() => setActiveTab('procurement')}
+        >
+          <Icon name="truck" size={16} /> Procurement ({purchaseOrders.length})
+        </button>
+        <button
           className={`btn ${activeTab === 'audit-logs' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
           onClick={() => setActiveTab('audit-logs')}
         >
@@ -371,22 +470,24 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{emp.email}</div>
                     </td>
                     <td>
-                      <span className="badge badge-gray">{emp.sector || 'Unassigned'}</span>
+                      <select
+                        className="form-select"
+                        style={{ minWidth: '170px', fontSize: '0.75rem' }}
+                        value={emp.sector || ''}
+                        onChange={(e) => handleUpdateEmployee(emp, { sector: e.target.value })}
+                      >
+                        {sectorsList.map((sector) => <option key={sector} value={sector}>{sector}</option>)}
+                      </select>
                     </td>
                     <td>
-                      <span
-                        className={`badge ${
-                          emp.role === 'ADMIN'
-                            ? 'badge-purple'
-                            : emp.role === 'MANAGER'
-                            ? 'badge-primary'
-                            : emp.role === 'CASHIER'
-                            ? 'badge-success'
-                            : 'badge-warning'
-                        }`}
+                      <select
+                        className="form-select"
+                        style={{ minWidth: '145px', fontSize: '0.75rem' }}
+                        value={emp.role}
+                        onChange={(e) => handleUpdateEmployee(emp, { role: e.target.value })}
                       >
-                        {emp.role}
-                      </span>
+                        {rolesList.map((role) => <option key={role.role} value={role.role}>{role.role}</option>)}
+                      </select>
                     </td>
                     <td>
                       <span
@@ -472,6 +573,11 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                             Activate
                           </button>
                         )}
+                        {emp.role !== 'ADMIN' && (
+                          <button className="btn btn-secondary btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteEmployee(emp)}>
+                            <Icon name="trash" size={14} /> Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -482,9 +588,62 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
         </div>
       )}
 
-      {/* TAB 2: MULTI-WAREHOUSE LOCATIONS */}
+      {/* TAB 2: PRODUCT CATALOGUE */}
+      {activeTab === 'products' && (
+        <div className="table-container card" style={{ padding: 0 }}>
+          <div className="card-header">
+            <div>
+              <h3 className="card-title"><Icon name="barcode" size={18} /> Product Catalogue Oversight</h3>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Products, generated barcodes, pricing, stock, and status.</p>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={fetchOperationalData}><Icon name="refresh-cw" size={14} /> Refresh</button>
+          </div>
+          <table className="custom-table">
+            <thead><tr><th>Product</th><th>Barcode</th><th>Supplier</th><th>Warehouse</th><th>Price</th><th>Stock</th><th>Status</th></tr></thead>
+            <tbody>{products.map((product) => (
+              <tr key={product.id}>
+                <td><strong>{product.name}</strong><div className="form-input-mono" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{product.sku}</div></td>
+                <td className="form-input-mono">{product.barcode}</td>
+                <td>{suppliers.find((supplier) => supplier.id === product.supplierId)?.name || product.supplierId}</td>
+                <td>{product.warehouseId} / {product.binLocation}</td>
+                <td>R {Number(product.price).toFixed(2)}</td>
+                <td>{product.stock} ({product.availableStock} available)</td>
+                <td><span className={`badge ${product.status === 'Healthy' ? 'badge-success' : 'badge-warning'}`}>{product.status}</span></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {/* TAB 3: PROCUREMENT OVERSIGHT */}
+      {activeTab === 'procurement' && (
+        <div>
+          <div className="grid-cols-3" style={{ marginBottom: '1.25rem' }}>
+            {suppliers.map((supplier) => (
+              <div className="card" key={supplier.id}><span className="badge badge-primary">Supplier</span><h3 style={{ marginTop: '8px' }}>{supplier.name}</h3><p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>{supplier.contact}</p><p style={{ marginTop: '8px' }}>Lead time: {supplier.leadTimeDays} days · Rating: {supplier.rating}</p></div>
+            ))}
+          </div>
+          <div className="table-container card" style={{ padding: 0 }}>
+            <div className="card-header"><h3 className="card-title"><Icon name="truck" size={18} /> Purchase Orders</h3><button className="btn btn-secondary btn-sm" onClick={fetchOperationalData}><Icon name="refresh-cw" size={14} /> Refresh</button></div>
+            <table className="custom-table"><thead><tr><th>PO</th><th>Item</th><th>Supplier</th><th>Quantity</th><th>Received</th><th>Status</th></tr></thead><tbody>{purchaseOrders.map((order) => <tr key={order.id}><td className="form-input-mono">PO-{order.id}</td><td>{order.itemName}<div className="form-input-mono" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{order.sku}</div></td><td>{order.supplierName}</td><td>{order.quantity}</td><td>{order.receivedQuantity}</td><td><span className="badge badge-primary">{order.status}</span></td></tr>)}</tbody></table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: MULTI-WAREHOUSE LOCATIONS */}
       {activeTab === 'warehouses' && (
         <div>
+          <form className="card" onSubmit={saveNewWarehouse} style={{ marginBottom: '1.25rem' }}>
+            <div className="card-header"><h3 className="card-title"><Icon name="plus" size={18} /> Add Warehouse</h3><button type="button" className="btn btn-secondary btn-sm" onClick={fetchWarehouses}><Icon name="refresh-cw" size={14} /> Refresh</button></div>
+            <div className="grid-cols-4">
+              {[
+                ['id', 'Warehouse ID'], ['name', 'Name'], ['city', 'City'], ['supervisor', 'Supervisor'],
+                ['binsCount', 'Bins'], ['activeSkus', 'Active SKUs'], ['capacityPct', 'Capacity %'],
+              ].map(([field, label]) => <label className="form-label" key={field}>{label}<input className="form-input" required={['id', 'name', 'city'].includes(field)} type={['binsCount', 'activeSkus', 'capacityPct'].includes(field) ? 'number' : 'text'} value={newWarehouse[field]} onChange={(e) => setNewWarehouse({ ...newWarehouse, [field]: e.target.value })} /></label>)}
+              <label className="form-label">Status<select className="form-select" value={newWarehouse.status} onChange={(e) => setNewWarehouse({ ...newWarehouse, status: e.target.value })}><option>STANDBY</option><option>OPERATIONAL</option></select></label>
+            </div>
+            <button className="btn btn-primary" type="submit"><Icon name="check" size={16} /> Save Warehouse</button>
+          </form>
           <div className="grid-cols-3" style={{ marginBottom: '1.5rem' }}>
             {warehouses.map((wh) => (
               <div key={wh.id} className="card">
@@ -526,6 +685,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                     </div>
                   </div>
                 </div>
+                <button className="btn btn-secondary btn-sm" style={{ color: 'var(--danger)', marginTop: '1rem' }} onClick={() => deleteWarehouse(wh)}><Icon name="trash" size={14} /> Delete Warehouse</button>
               </div>
             ))}
           </div>
@@ -724,6 +884,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                         if (e.target.value === 'Store Management') setRegRole('MANAGER');
                         else if (e.target.value === 'Cashier & Front-of-House') setRegRole('CASHIER');
                         else if (e.target.value === 'Warehouse & Logistics') setRegRole('WAREHOUSE_STAFF');
+                        else if (e.target.value === 'Procurement & Supply Chain') setRegRole('PROCUREMENT_STAFF');
                         else if (e.target.value === 'System Administration') setRegRole('ADMIN');
                       }}
                     >

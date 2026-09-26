@@ -154,6 +154,13 @@ export const Icon = ({ name, size = 18, className = '' }) => {
           <line x1="5" y1="12" x2="19" y2="12" />
         </svg>
       );
+    case 'edit':
+      return (
+        <svg {...props}>
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+        </svg>
+      );
     case 'minus':
       return (
         <svg {...props}>

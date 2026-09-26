@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { WorkerAuthModal } from '../components/auth/WorkerAuthModal';
 import { CashierWorkspace } from '../components/cashier/CashierWorkspace';
+import { BrandLogo } from '../components/common/BrandLogo';
 import { Icon } from '../components/common/Icons';
 import { ManagerWorkspace } from '../components/manager/ManagerWorkspace';
 import { WarehouseWorkspace } from '../components/warehouse/WarehouseWorkspace';
@@ -57,6 +58,8 @@ export default function WorkerApp() {
     setToken('');
     localStorage.removeItem(WORKER_TOKEN_KEY);
     localStorage.removeItem(WORKER_USER_KEY);
+    localStorage.removeItem('syncstock_admin_token');
+    localStorage.removeItem('syncstock_admin_user');
   };
 
   const fetchDemoAccounts = async () => {
@@ -183,7 +186,7 @@ export default function WorkerApp() {
     <div className={`worker-app ${headerCompact ? 'header-compact' : ''}`}>
       {isBooting && (
         <div className="boot-screen" role="status" aria-live="polite">
-          <div className="boot-mark">SS</div>
+          <BrandLogo size={44} variant="worker" />
           <div className="boot-copy">
             <span>SyncStock</span>
             <small>Initializing operations console</small>
@@ -194,7 +197,7 @@ export default function WorkerApp() {
 
       <header className={`app-header ${headerCompact ? 'is-compact' : ''}`}>
         <div className="app-brand">
-          <div className="app-brand-mark">SS</div>
+          <BrandLogo size={36} variant="worker" />
           <div>
             <div className="app-brand-name">
               SyncStock <span style={{ color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600 }}>2.0</span>
@@ -286,8 +289,8 @@ export default function WorkerApp() {
       )}
 
       <main className="app-main">
-        {currentUser?.role === 'MANAGER' ? (
-          <ManagerWorkspace workspace={workspace} apiBase={API_BASE} token={token} onRefresh={fetchWorkspace} onNotify={showToast} />
+        {currentUser?.role === 'MANAGER' || currentUser?.role === 'PROCUREMENT_STAFF' ? (
+          <ManagerWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} />
         ) : currentUser?.role === 'CASHIER' ? (
           <CashierWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} />
         ) : currentUser?.role === 'WAREHOUSE_STAFF' ? (

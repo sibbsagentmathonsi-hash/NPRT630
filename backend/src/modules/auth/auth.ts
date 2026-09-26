@@ -1,9 +1,11 @@
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import nodemailer from 'nodemailer';
+import { generateSecret, generateURI, verifySync } from 'otplib';
 
 dotenv.config();
 
-export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAREHOUSE_STAFF';
+export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAREHOUSE_STAFF' | 'PROCUREMENT_STAFF';
 
 export type EmployeeSector =
   | 'Store Management'
@@ -135,6 +137,16 @@ const emailVerificationStore = new Map<string, { code: string; expiresAt: number
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-key';
 
+const smtpConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD);
+const mailer = smtpConfigured
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT ?? 587),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
+    })
+  : null;
+
 export const generateToken = (user: PublicUser): string => {
   return jwt.sign(
     {
@@ -167,6 +179,26 @@ export const verifyToken = (token: string) => {
   };
 };
 
+export const enrollMfa = (identifier: string): { secret: string; uri: string; user: PublicUser } | undefined => {
+  const clean = identifier.trim().toLowerCase();
+  const user = users.find((entry) => entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean);
+  if (!user) return undefined;
+  const secret = generateSecret();
+  user.mfaSecret = secret;
+  user.mfaEnabled = false;
+  return { secret, uri: generateURI({ issuer: 'SyncStock', label: user.email, secret }), user: toPublicUser(user) };
+};
+
+export const verifyMfa = (identifier: string, code: string): User | undefined => {
+  const clean = identifier.trim().toLowerCase();
+  const user = users.find((entry) => entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean);
+  if (!user?.mfaSecret || !/^\d{6}$/.test(code.trim())) return undefined;
+  const result = verifySync({ token: code.trim(), secret: user.mfaSecret });
+  if (!result.valid) return undefined;
+  user.mfaEnabled = true;
+  return user;
+};
+
 export const authenticateUser = (
   identifier: string,
   passwordAttempt: string
@@ -196,6 +228,7 @@ export const hasPermission = (userRole: UserRole, requiredRole: UserRole): boole
     MANAGER: 3,
     CASHIER: 2,
     WAREHOUSE_STAFF: 1,
+    PROCUREMENT_STAFF: 1,
   };
 
   return (rolePriority[userRole] ?? 0) >= (rolePriority[requiredRole] ?? 0);
@@ -348,9 +381,28 @@ export const sendEmailVerificationCode = (
   return {
     success: true,
     email: user.email,
-    code, // Returned for dev/grading preview convenience
+    code,
     expiresAt: new Date(expiresAt).toISOString(),
   };
+};
+
+export const dispatchEmailVerificationCode = async (identifier: string, code: string): Promise<void> => {
+  if (!mailer) {
+    return;
+  }
+
+  const clean = identifier.trim().toLowerCase();
+  const user = users.find((entry) => entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean);
+  if (!user) {
+    throw new Error('Employee not found');
+  }
+
+  await mailer.sendMail({
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+    to: user.email,
+    subject: 'SyncStock email verification code',
+    text: `Your SyncStock verification code is ${code}. It expires in 10 minutes and can only be used once.`,
+  });
 };
 
 // Validate 6-Digit Email Verification Code

@@ -29,6 +29,24 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     return () => clearTimeout(timer);
   }, [codeCountdown]);
 
+  useEffect(() => {
+    if (!isOpen) {
+      setAuthTab('login');
+      setIsFirstTimeMode(false);
+      setEmployeeId('');
+      setPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setError('');
+      setInfoMessage('');
+      setSetupSuccessUser(null);
+      setEmailVerifyIdentifier('');
+      setEmailVerifyCode('');
+      setEmailSentData(null);
+      setCodeCountdown(0);
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const isAdminAccess = accessMode === 'admin';
@@ -163,7 +181,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
 
       setEmailSentData(data);
       setCodeCountdown(60);
-      setInfoMessage(`Authentication code sent to ${data.email}! Check console/dev preview.`);
+      setInfoMessage(`Authentication code sent to ${data.email}. Check your inbox.`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -218,14 +236,6 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     } finally {
       setVerifyingCode(false);
     }
-  };
-
-  const selectDemoAccount = (user) => {
-    setEmployeeId(user.employeeId || user.email);
-    setEmailVerifyIdentifier(user.employeeId || user.email);
-    setPassword(user.password || (user.isFirstLogin ? 'tempPass123!' : `${user.role.toLowerCase()}123`));
-    setError('');
-    setInfoMessage('');
   };
 
   return (
@@ -322,12 +332,13 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                   </p>
                 </div>
 
-                <form onSubmit={handleLogin}>
+                <form onSubmit={handleLogin} autoComplete="off">
                   <div className="form-group">
                     <label className="form-label">Employee ID / Email</label>
                     <input
                       type="text"
                       className="form-input form-input-mono"
+                      autoComplete="off"
                       placeholder={isAdminAccess ? 'e.g. EMP-ADM-001' : 'e.g. EMP-MGR-101, EMP-CSH-201'}
                       value={employeeId}
                       onChange={(e) => {
@@ -343,6 +354,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                     <input
                       type="password"
                       className="form-input"
+                      autoComplete="new-password"
                       placeholder="••••••••"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -420,18 +432,19 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                       <span className="badge badge-success">Active</span>
                     </div>
 
-                    {/* Dev/Grading quick auto-fill helper */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--purple-light)', padding: '6px 10px', borderRadius: '6px', fontSize: '0.75rem' }}>
-                      <span><strong>Dev Preview Code:</strong> <code className="form-input-mono">{emailSentData.code}</code></span>
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        style={{ padding: '2px 6px', fontSize: '0.6875rem' }}
-                        onClick={() => setEmailVerifyCode(emailSentData.code)}
-                      >
-                        Auto-Fill
-                      </button>
-                    </div>
+                    {emailSentData.code && (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--purple-light)', padding: '6px 10px', borderRadius: '6px', fontSize: '0.75rem' }}>
+                        <span><strong>Dev Preview Code:</strong> <code className="form-input-mono">{emailSentData.code}</code></span>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '2px 6px', fontSize: '0.6875rem' }}
+                          onClick={() => setEmailVerifyCode(emailSentData.code)}
+                        >
+                          Auto-Fill
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -461,25 +474,6 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
               </div>
             )}
 
-            {/* QUICK DEMO LOGINS */}
-            {isAdminAccess && (
-            <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
-              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                PRIMARY ADMINISTRATOR CREDENTIALS:
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <button
-                  type="button"
-                  onClick={() => selectDemoAccount({ employeeId: 'EMP-ADM-001', email: 'sibbs.agentmathonsi@gmail.com', role: 'ADMIN', password: '@Arg3nt2003' })}
-                  className="btn btn-secondary btn-sm"
-                  style={{ justifyContent: 'space-between', borderColor: 'var(--purple-border)', background: 'var(--purple-light)' }}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}><Icon name="shield-check" size={15} /> <strong>Sibusiso Mathonsi (ADMIN)</strong></span>
-                  <span className="badge badge-purple">Pass: @Arg3nt2003</span>
-                </button>
-              </div>
-            </div>
-            )}
           </div>
         ) : (
           /* FIRST-TIME SETUP WIZARD WITH EMAIL VERIFICATION & PASSWORD SETUP */

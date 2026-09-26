@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 
 import {
   categories,
@@ -15,16 +16,20 @@ import {
   getDashboardSummary,
   getLowStockProducts,
   getProductSnapshots,
+  products,
   recordCycleCount,
   releaseReservedOrder,
   salesReceipts,
   stockMovements,
+  toProductSnapshot,
   type ReturnReason,
 } from './inventory';
 import { connectDatabase } from './config/database';
 import {
   authenticateUser,
   demoAccounts,
+  dispatchEmailVerificationCode,
+  enrollMfa,
   generateToken,
   getUsersByRole,
   logSecurityEvent,
@@ -34,6 +39,7 @@ import {
   setFirstPassword,
   toPublicUser,
   users,
+  verifyMfa,
   verifyEmailCode,
   type EmployeeSector,
   type UserRole,
@@ -51,10 +57,29 @@ import {
   suppliers,
 } from './modules/procurement/procurement';
 import { calculateForecast, calculateForecasts } from './modules/forecasting/forecasting';
+import {
+  persistCustomerOrder,
+  persistCustomerOrderStatus,
+  getPersistedAuditLogs,
+  getWarehouses,
+  persistAuditLog,
+  persistPurchaseOrder,
+  persistProduct,
+  persistReceiving,
+  persistReturn,
+  persistSale,
+  persistUser,
+  persistUserState,
+  removeUser,
+  saveWarehouse,
+  deleteWarehouse,
+  persistUserVerification,
+  setDatabaseReady,
+} from './persistence';
 
 dotenv.config();
 
-const app = express();
+export const app = express();
 const preferredPort = Number(process.env.PORT ?? 4000);
 
 app.use(cors());
@@ -173,6 +198,16 @@ const workspacePayload = (role: UserRole) => {
     };
   }
 
+  if (role === 'PROCUREMENT_STAFF') {
+    return {
+      ...base,
+      suppliers,
+      purchaseOrders: getPurchaseOrders(),
+      supplierPerformance: getSupplierPerformance(),
+      forecasts: calculateForecasts(),
+    };
+  }
+
   return {
     ...base,
     suppliers,
@@ -204,8 +239,8 @@ app.get('/api/auth/demo-accounts', (_req, res) => {
 
 // Universal & Worker Login (accepts Employee ID or Email)
 app.post('/api/auth/login', (req, res) => {
-  const { email, employeeId, password } = req.body ?? {};
-  const identifier = employeeId || email;
+  const { email, employeeId, identifier: rawId, password } = req.body ?? {};
+  const identifier = employeeId || email || rawId;
 
   if (!identifier || !password) {
     return res.status(400).json({ error: 'Employee ID (or Email) and password are required' });
@@ -232,7 +267,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Mandatory First-Time Password Setup Wizard
-app.post('/api/auth/set-first-password', (req, res) => {
+app.post('/api/auth/set-first-password', async (req, res) => {
   const { employeeId, email, currentPassword, newPassword } = req.body ?? {};
   const identifier = employeeId || email;
 
@@ -246,6 +281,8 @@ app.post('/api/auth/set-first-password', (req, res) => {
     return res.status(400).json({ error: result.error || 'Password setup failed' });
   }
 
+  await persistUser(result.user, await bcrypt.hash(String(newPassword), 12));
+
   const token = generateToken(result.user);
 
   return res.json({
@@ -255,13 +292,24 @@ app.post('/api/auth/set-first-password', (req, res) => {
   });
 });
 
-// MFA Verification Endpoint (Mock/Simulated TOTP Challenge)
-app.post('/api/auth/verify-mfa', (req, res) => {
+// MFA Enrollment and TOTP Verification
+app.post('/api/auth/mfa/enroll', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
+  const result = enrollMfa(req.user.employeeId);
+  if (!result) return res.status(404).json({ error: 'Employee account not found' });
+  await persistUserState(users.find((user) => user.employeeId === req.user.employeeId)!);
+  return res.json({ message: 'MFA enrollment created. Scan the URI with an authenticator app.', secret: result.secret, uri: result.uri, user: result.user });
+});
+
+app.post('/api/auth/verify-mfa', async (req: any, res) => {
   const { code, employeeId } = req.body ?? {};
 
-  if (!code || String(code).length !== 6) {
+  if (!code || !employeeId || String(code).length !== 6) {
     return res.status(400).json({ error: 'Valid 6-digit MFA code required' });
   }
+
+  const user = verifyMfa(String(employeeId), String(code));
+  if (!user) return res.status(401).json({ error: 'Invalid MFA code or MFA is not enrolled' });
+  await persistUserState(user);
 
   return res.json({
     message: 'MFA verified successfully',
@@ -291,7 +339,7 @@ app.post('/api/auth/quick-switch', (req, res) => {
 });
 
 // Send 6-Digit Email Verification Code (OTP)
-app.post('/api/auth/send-verification-code', (req, res) => {
+app.post('/api/auth/send-verification-code', async (req, res) => {
   const { identifier, employeeId, email } = req.body ?? {};
   const target = identifier || employeeId || email;
 
@@ -304,16 +352,22 @@ app.post('/api/auth/send-verification-code', (req, res) => {
     return res.status(400).json({ error: result.error || 'Failed to dispatch verification code' });
   }
 
+  try {
+    await dispatchEmailVerificationCode(String(target), result.code || '');
+  } catch (error) {
+    return res.status(502).json({ error: error instanceof Error ? `Email delivery failed: ${error.message}` : 'Email delivery failed' });
+  }
+
   return res.json({
     message: `A 6-digit authentication code was sent to ${result.email}`,
     email: result.email,
-    code: result.code, // Returned for dev preview convenience
+    ...(process.env.SMTP_HOST ? {} : { code: result.code }),
     expiresAt: result.expiresAt,
   });
 });
 
 // Confirm & Verify Email Code
-app.post('/api/auth/verify-email-code', (req, res) => {
+app.post('/api/auth/verify-email-code', async (req, res) => {
   const { identifier, employeeId, email, code } = req.body ?? {};
   const target = identifier || employeeId || email;
 
@@ -325,6 +379,8 @@ app.post('/api/auth/verify-email-code', (req, res) => {
   if (!result.success || !result.user) {
     return res.status(400).json({ error: result.error || 'Invalid verification code' });
   }
+
+  await persistUserVerification(result.user.employeeId);
 
   const token = generateToken(result.user);
   return res.json({
@@ -340,7 +396,7 @@ app.post('/api/auth/verify-email-code', (req, res) => {
 // ==========================================
 
 // Register Employee by Sector (Admin Only)
-app.post('/api/admin/employees', authorize('ADMIN'), (req: any, res) => {
+app.post('/api/admin/employees', authorize('ADMIN'), async (req: any, res) => {
   const { name, email, role, sector, tempPassword } = req.body ?? {};
 
   const result = registerEmployee({
@@ -356,6 +412,8 @@ app.post('/api/admin/employees', authorize('ADMIN'), (req: any, res) => {
     return res.status(400).json({ error: result.error });
   }
 
+  await persistUser(result.user, await bcrypt.hash(result.generatedPassword, 12));
+
   return res.status(201).json({
     message: `Employee registered successfully with ID: ${result.user.employeeId}`,
     user: result.user,
@@ -369,7 +427,7 @@ app.get('/api/admin/employees', authorize('ADMIN'), (_req, res) => {
 });
 
 // Update Employee Role / Status / Sector
-app.patch('/api/admin/employees/:id', authorize('ADMIN'), (req: any, res) => {
+app.patch('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
   const target = users.find((u) => u.id === userId);
 
@@ -381,13 +439,16 @@ app.patch('/api/admin/employees/:id', authorize('ADMIN'), (req: any, res) => {
   if (req.body.sector) target.sector = req.body.sector;
   if (req.body.status) target.status = req.body.status;
 
-  logSecurityEvent(
+  await persistUserState(target);
+
+  const auditLog = logSecurityEvent(
     'USER_ROLE_UPDATED',
     req.user.email,
     'ADMIN',
     `Updated permissions/status for ${target.name} (${target.employeeId}) to Role: ${target.role}, Status: ${target.status}`,
     target.employeeId
   );
+  await persistAuditLog(auditLog);
 
   return res.json({
     message: 'Employee updated successfully',
@@ -396,8 +457,22 @@ app.patch('/api/admin/employees/:id', authorize('ADMIN'), (req: any, res) => {
   });
 });
 
+app.delete('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res) => {
+  const userId = Number(req.params.id);
+  const target = users.find((u) => u.id === userId);
+  if (!target) return res.status(404).json({ error: 'Employee not found' });
+  if (target.role === 'ADMIN') return res.status(400).json({ error: 'Administrator accounts cannot be deleted' });
+
+  const index = users.findIndex((u) => u.id === userId);
+  users.splice(index, 1);
+  await removeUser(userId);
+  const auditLog = logSecurityEvent('USER_STATUS_UPDATED', req.user.email, 'ADMIN', `Deleted employee ${target.name} (${target.employeeId})`, target.employeeId);
+  await persistAuditLog(auditLog);
+  return res.json({ message: 'Employee deleted successfully', employees: demoAccounts() });
+});
+
 // Reset Password / MFA for Employee
-app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), (req: any, res) => {
+app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
   const target = users.find((u) => u.id === userId);
 
@@ -408,14 +483,16 @@ app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), (req: an
   target.password = 'ResetPass123!';
   target.isFirstLogin = true;
   target.status = 'PENDING_SETUP';
+  await persistUser(target, await bcrypt.hash('ResetPass123!', 12));
 
-  logSecurityEvent(
+  const auditLog = logSecurityEvent(
     'PASSWORD_RESET_TRIGGERED',
     req.user.email,
     'ADMIN',
     `Admin triggered password reset for ${target.name} (${target.employeeId})`,
     target.employeeId
   );
+  await persistAuditLog(auditLog);
 
   return res.json({
     message: `Password reset to temporary password 'ResetPass123!'. User must change password on next login.`,
@@ -423,7 +500,7 @@ app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), (req: an
   });
 });
 
-app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), (req: any, res) => {
+app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
   const target = users.find((u) => u.id === userId);
 
@@ -432,14 +509,16 @@ app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), (req: any, re
   }
 
   target.mfaEnabled = false;
+  await persistUserState(target);
 
-  logSecurityEvent(
+  const auditLog = logSecurityEvent(
     'MFA_RESET',
     req.user.email,
     'ADMIN',
     `Admin reset MFA device for ${target.name} (${target.employeeId})`,
     target.employeeId
   );
+  await persistAuditLog(auditLog);
 
   return res.json({
     message: `MFA device reset for ${target.name}. User will be prompted to re-enroll.`,
@@ -448,18 +527,53 @@ app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), (req: any, re
 });
 
 // Immutable Security Audit Logs Viewer (NFR-SEC-01)
-app.get('/api/admin/audit-logs', authorize('ADMIN'), (_req, res) => {
-  res.json({ logs: securityAuditLogs });
+app.get('/api/admin/audit-logs', authorize('ADMIN'), async (_req, res) => {
+  const persistedLogs = await getPersistedAuditLogs();
+  res.json({ logs: persistedLogs.length > 0 ? persistedLogs : securityAuditLogs });
+});
+
+app.get('/api/admin/warehouses', authorize('ADMIN'), async (_req, res) => {
+  res.json({ warehouses: await getWarehouses() });
+});
+
+app.post('/api/admin/warehouses', authorize('ADMIN'), async (req: any, res) => {
+  const warehouse = {
+    id: String(req.body?.id ?? '').trim().toUpperCase(),
+    name: String(req.body?.name ?? '').trim(),
+    city: String(req.body?.city ?? '').trim(),
+    binsCount: Number(req.body?.binsCount ?? 0),
+    activeSkus: Number(req.body?.activeSkus ?? 0),
+    capacityPct: Number(req.body?.capacityPct ?? 0),
+    supervisor: String(req.body?.supervisor ?? 'Unassigned'),
+    status: String(req.body?.status ?? 'STANDBY'),
+  };
+  if (!warehouse.id || !warehouse.name || !warehouse.city) return res.status(400).json({ error: 'id, name and city are required' });
+  await saveWarehouse(warehouse);
+  return res.status(201).json({ message: 'Warehouse saved', warehouse, warehouses: await getWarehouses() });
+});
+
+app.patch('/api/admin/warehouses/:id', authorize('ADMIN'), async (req: any, res) => {
+  const warehouses = await getWarehouses() as any[];
+  const current = warehouses.find((warehouse) => warehouse.id === req.params.id);
+  if (!current) return res.status(404).json({ error: 'Warehouse not found' });
+  const warehouse = { ...current, ...req.body, id: current.id };
+  await saveWarehouse(warehouse);
+  return res.json({ message: 'Warehouse updated', warehouse, warehouses: await getWarehouses() });
+});
+
+app.delete('/api/admin/warehouses/:id', authorize('ADMIN'), async (req, res) => {
+  await deleteWarehouse(req.params.id);
+  return res.json({ message: 'Warehouse deleted', warehouses: await getWarehouses() });
 });
 
 // ==========================================
 // 4. CORE INVENTORY & PRODUCTS
 // ==========================================
-app.get('/api/products', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (_req, res) => {
+app.get('/api/products', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
   res.json({ products: getProductSnapshots(), categories });
 });
 
-app.post('/api/products', authorize('MANAGER'), (req: any, res) => {
+app.post('/api/products', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), async (req: any, res) => {
   try {
     const product = createProduct({
       sku: String(req.body?.sku ?? ''),
@@ -477,10 +591,32 @@ app.post('/api/products', authorize('MANAGER'), (req: any, res) => {
       binLocation: String(req.body?.binLocation ?? 'A-01'),
       imageUrl: req.body?.imageUrl ? String(req.body.imageUrl) : undefined,
     });
+    await persistProduct(product);
 
     return res.status(201).json({ message: 'Product created successfully', product, ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to create product');
+  }
+});
+
+app.patch('/api/products/:id', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), async (req: any, res) => {
+  try {
+    const product = products.find((entry) => entry.id === Number(req.params.id));
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    const editableFields = ['barcode', 'name', 'category', 'supplierId', 'reorderPoint', 'reorderQuantity', 'unitCost', 'price', 'warehouse', 'warehouseId', 'binLocation', 'imageUrl', 'isActive'];
+    for (const field of editableFields) {
+      if (req.body?.[field] !== undefined) {
+        (product as any)[field] = ['supplierId', 'reorderPoint', 'reorderQuantity', 'unitCost', 'price'].includes(field)
+          ? Number(req.body[field])
+          : req.body[field];
+      }
+    }
+    product.updatedAt = new Date().toISOString();
+    await persistProduct(product);
+    return res.json({ message: 'Product updated successfully', product: toProductSnapshot(product), ...inventoryPayload() });
+  } catch (error) {
+    return handleDomainError(res, error, 'Unable to update product');
   }
 });
 
@@ -496,7 +632,7 @@ app.get('/api/dashboard/summary', authorize('MANAGER'), (_req, res) => {
   res.json(getDashboardSummary());
 });
 
-app.get('/api/inventory/workspace', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (req: any, res) => {
+app.get('/api/inventory/workspace', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (req: any, res) => {
   res.json(workspacePayload(req.user.role));
 });
 
@@ -505,7 +641,7 @@ app.get('/api/inventory/workspace', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_S
 // ==========================================
 
 // POS Sale Checkout (< 30s 5-item transaction support)
-app.post('/api/sales', authorize('MANAGER', 'CASHIER'), (req: any, res) => {
+app.post('/api/sales', authorize('MANAGER', 'CASHIER'), async (req: any, res) => {
   try {
     const saleResult = createSaleTransaction(toSaleItems(req.body), {
       cashierName: req.user?.name || req.user?.email || 'Cashier',
@@ -515,6 +651,7 @@ app.post('/api/sales', authorize('MANAGER', 'CASHIER'), (req: any, res) => {
       tenderAmount: req.body?.tenderAmount ? Number(req.body.tenderAmount) : undefined,
       notes: req.body?.notes ? String(req.body.notes) : undefined,
     });
+    await persistSale(saleResult.receipt, saleResult.movements, getProductSnapshots());
 
     return res.status(201).json({
       message: 'Sale transaction processed successfully',
@@ -532,7 +669,7 @@ app.get('/api/sales/receipts', authorize('MANAGER', 'CASHIER'), (_req, res) => {
 });
 
 // Process 2-Step Returns with Visual Reasons
-app.post('/api/returns', authorize('MANAGER', 'CASHIER'), (req: any, res) => {
+app.post('/api/returns', authorize('MANAGER', 'CASHIER'), async (req: any, res) => {
   const { productId, quantity, reason, notes, receiptNumber } = req.body ?? {};
 
   if (!productId || !quantity) {
@@ -548,6 +685,17 @@ app.post('/api/returns', authorize('MANAGER', 'CASHIER'), (req: any, res) => {
       actor: `${req.user?.name || 'Cashier'} (${req.user?.employeeId || 'STAFF'})`,
       receiptNumber: receiptNumber ? String(receiptNumber) : undefined,
     });
+    await persistReturn(
+      result.returnId,
+      receiptNumber ? String(receiptNumber) : undefined,
+      result.updatedProduct,
+      Number(quantity),
+      String(reason || 'Customer Changed Mind'),
+      notes ? String(notes) : undefined,
+      `${req.user?.name || 'Cashier'} (${req.user?.employeeId || 'STAFF'})`,
+      result.refundAmount,
+      result.movement
+    );
 
     return res.status(201).json({
       message: `Return processed. Refund of R ${result.refundAmount.toFixed(2)} issued. Stock restored.`,
@@ -566,7 +714,7 @@ app.post('/api/returns', authorize('MANAGER', 'CASHIER'), (req: any, res) => {
 // ==========================================
 
 // Receiving Goods against PO with Damage/Shortage Flags
-app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), (req: any, res) => {
+app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
   const { productId, quantity, notes, poNumber } = req.body ?? {};
 
   if (!productId || !quantity) {
@@ -581,6 +729,7 @@ app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), (req: any, r
       `${req.user?.name || 'Warehouse Staff'} (${req.user?.employeeId || 'STAFF'})`,
       poNumber ? String(poNumber) : undefined
     );
+    await persistReceiving(result.updatedProduct, result.movement);
 
     return res.status(201).json({
       message: 'Goods received and stock-on-hand updated successfully',
@@ -630,15 +779,15 @@ app.get('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), (_req, res
 // ==========================================
 // 7. PROCUREMENT & SUPPLIERS
 // ==========================================
-app.get('/api/suppliers', authorize('MANAGER', 'WAREHOUSE_STAFF'), (_req, res) => {
+app.get('/api/suppliers', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
   res.json({ suppliers });
 });
 
-app.get('/api/purchase-orders', authorize('MANAGER', 'WAREHOUSE_STAFF'), (_req, res) => {
+app.get('/api/purchase-orders', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
   res.json({ purchaseOrders: getPurchaseOrders() });
 });
 
-app.post('/api/purchase-orders', authorize('MANAGER'), (req, res) => {
+app.post('/api/purchase-orders', authorize('MANAGER', 'PROCUREMENT_STAFF'), async (req, res) => {
   const { supplierId, sku, itemName, quantity, notes } = req.body ?? {};
 
   if (!supplierId || !sku || !itemName || !quantity) {
@@ -653,65 +802,71 @@ app.post('/api/purchase-orders', authorize('MANAGER'), (req, res) => {
       Number(quantity),
       notes ? String(notes) : undefined
     );
+    await persistPurchaseOrder(purchaseOrder);
     return res.status(201).json({ message: 'Purchase order created', purchaseOrder, purchaseOrders: getPurchaseOrders() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to create purchase order');
   }
 });
 
-app.post('/api/purchase-orders/generate-low-stock', authorize('MANAGER'), (_req, res) => {
+app.post('/api/purchase-orders/generate-low-stock', authorize('MANAGER', 'PROCUREMENT_STAFF'), async (_req, res) => {
   const generated = generateLowStockPurchaseOrders();
+  for (const purchaseOrder of generated) await persistPurchaseOrder(purchaseOrder);
   res.status(201).json({ message: 'Low-stock purchase orders generated', generated, purchaseOrders: getPurchaseOrders() });
 });
 
-app.patch('/api/purchase-orders/:id/approve', authorize('MANAGER'), (req, res) => {
+app.patch('/api/purchase-orders/:id/approve', authorize('MANAGER', 'PROCUREMENT_STAFF'), async (req, res) => {
   try {
     const purchaseOrder = approvePurchaseOrder(Number(req.params.id));
+    await persistPurchaseOrder(purchaseOrder);
     return res.json({ message: 'Purchase order approved', purchaseOrder, purchaseOrders: getPurchaseOrders() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to approve purchase order');
   }
 });
 
-app.patch('/api/purchase-orders/:id/send', authorize('MANAGER'), (req, res) => {
+app.patch('/api/purchase-orders/:id/send', authorize('MANAGER', 'PROCUREMENT_STAFF'), async (req, res) => {
   try {
     const purchaseOrder = sendPurchaseOrder(Number(req.params.id));
+    await persistPurchaseOrder(purchaseOrder);
     return res.json({ message: 'Purchase order sent', purchaseOrder, purchaseOrders: getPurchaseOrders() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to send purchase order');
   }
 });
 
-app.patch('/api/purchase-orders/:id/cancel', authorize('MANAGER'), (req, res) => {
+app.patch('/api/purchase-orders/:id/cancel', authorize('MANAGER', 'PROCUREMENT_STAFF'), async (req, res) => {
   try {
     const purchaseOrder = cancelPurchaseOrder(Number(req.params.id));
+    await persistPurchaseOrder(purchaseOrder);
     return res.json({ message: 'Purchase order cancelled', purchaseOrder, purchaseOrders: getPurchaseOrders() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to cancel purchase order');
   }
 });
 
-app.patch('/api/purchase-orders/:id/receive', authorize('MANAGER', 'WAREHOUSE_STAFF'), (req: any, res) => {
+app.patch('/api/purchase-orders/:id/receive', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
   try {
     const purchaseOrder = receivePurchaseOrder(Number(req.params.id), Number(req.body?.quantity), actorName(req));
+    await persistPurchaseOrder(purchaseOrder);
     return res.json({ message: 'Purchase order received', purchaseOrder, purchaseOrders: getPurchaseOrders(), ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to receive purchase order');
   }
 });
 
-app.get('/api/supplier-performance', authorize('MANAGER'), (_req, res) => {
+app.get('/api/supplier-performance', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), (_req, res) => {
   res.json({ suppliers: getSupplierPerformance() });
 });
 
 // ==========================================
 // 8. FORECASTING & ANALYTICS
 // ==========================================
-app.get('/api/forecast', authorize('MANAGER'), (_req, res) => {
+app.get('/api/forecast', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), (_req, res) => {
   res.json({ forecasts: calculateForecasts() });
 });
 
-app.get('/api/forecast/:sku', authorize('MANAGER'), (req, res) => {
+app.get('/api/forecast/:sku', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), (req, res) => {
   const forecast = calculateForecast(req.params.sku);
   res.json({ forecast });
 });
@@ -723,31 +878,34 @@ app.get('/api/orders', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (_req
   res.json({ orders: customerOrders });
 });
 
-app.post('/api/orders/reserve', authorize('MANAGER', 'CASHIER'), (req: any, res) => {
+app.post('/api/orders/reserve', authorize('MANAGER', 'CASHIER'), async (req: any, res) => {
   try {
     const order = createOnlineOrder({
       customerName: String(req.body?.customerName ?? 'Online Customer'),
       items: toSaleItems(req.body),
       shippingAddress: req.body?.shippingAddress ? String(req.body.shippingAddress) : undefined,
     });
+    await persistCustomerOrder(order, getProductSnapshots());
     return res.status(201).json({ message: 'Order reserved successfully', order, orders: customerOrders, ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to reserve order');
   }
 });
 
-app.patch('/api/orders/:id/commit', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (req: any, res) => {
+app.patch('/api/orders/:id/commit', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
   try {
     const order = commitReservedOrder(Number(req.params.id));
+    await persistCustomerOrderStatus(order, getProductSnapshots());
     return res.json({ message: 'Reserved order committed to fulfillment', order, orders: customerOrders, ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to commit reserved order');
   }
 });
 
-app.patch('/api/orders/:id/release', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (req: any, res) => {
+app.patch('/api/orders/:id/release', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
   try {
     const order = releaseReservedOrder(Number(req.params.id));
+    await persistCustomerOrderStatus(order, getProductSnapshots());
     return res.json({ message: 'Reserved order released', order, orders: customerOrders, ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to release reserved order');
@@ -771,6 +929,9 @@ const startServer = (port: number) => {
   });
 };
 
-connectDatabase().then(() => {
-  startServer(preferredPort);
-});
+if (process.env.NODE_ENV !== 'test') {
+  connectDatabase().then((databaseConnected) => {
+    setDatabaseReady(databaseConnected);
+    startServer(preferredPort);
+  });
+}

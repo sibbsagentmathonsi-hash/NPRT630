@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { AdminPortal } from '../components/admin/AdminPortal';
 import { WorkerAuthModal } from '../components/auth/WorkerAuthModal';
+import { BrandLogo } from '../components/common/BrandLogo';
 import { Icon } from '../components/common/Icons';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 const ADMIN_TOKEN_KEY = 'syncstock_admin_token';
 const ADMIN_USER_KEY = 'syncstock_admin_user';
+const WORKER_TOKEN_KEY = 'syncstock_worker_token';
+const WORKER_USER_KEY = 'syncstock_worker_user';
 
 export default function AdminApp() {
   const [theme, setTheme] = useState('dark');
@@ -26,6 +29,8 @@ export default function AdminApp() {
     setToken('');
     localStorage.removeItem(ADMIN_TOKEN_KEY);
     localStorage.removeItem(ADMIN_USER_KEY);
+    localStorage.removeItem(WORKER_TOKEN_KEY);
+    localStorage.removeItem(WORKER_USER_KEY);
   };
 
   const handleLogin = async (user, newToken) => {
@@ -90,7 +95,7 @@ export default function AdminApp() {
     <div className={`admin-app worker-app ${headerCompact ? 'header-compact' : ''}`}>
       {isBooting && (
         <div className="boot-screen" role="status" aria-live="polite">
-          <div className="boot-mark boot-mark-icon"><Icon name="shield-check" size={22} /></div>
+          <BrandLogo size={44} variant="admin" />
           <div className="boot-copy">
             <span>SyncStock Admin</span>
             <small>Securing governance console</small>
@@ -102,7 +107,7 @@ export default function AdminApp() {
 
       <header className={`app-header ${headerCompact ? 'is-compact' : ''}`}>
         <div className="app-brand">
-          <div className="app-brand-mark app-brand-mark-icon"><Icon name="shield-check" size={20} /></div>
+          <BrandLogo size={36} variant="admin" />
           <div>
             <div className="app-brand-name">SyncStock <span style={{ color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600 }}>Admin</span></div>
             <div className="app-brand-caption">Employee access / Governance</div>

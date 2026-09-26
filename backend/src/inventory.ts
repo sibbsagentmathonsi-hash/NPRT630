@@ -561,6 +561,36 @@ export const findProductById = (id: number): Product | undefined => {
   return products.find((p) => p.id === id);
 };
 
+export const hydrateProducts = (storedProducts: Array<Partial<Product> & { id: number; sku: string }>): void => {
+  for (const stored of storedProducts) {
+    const existingIndex = products.findIndex((product) => product.id === stored.id || product.sku === stored.sku);
+    const hydrated: Product = {
+      id: stored.id,
+      sku: stored.sku,
+      barcode: stored.barcode ?? '',
+      name: stored.name ?? stored.sku,
+      category: stored.category ?? 'General',
+      supplierId: Number(stored.supplierId ?? 1),
+      stock: Number(stored.stock ?? 0),
+      qtyReserved: Number(stored.qtyReserved ?? 0),
+      reorderPoint: Number(stored.reorderPoint ?? 0),
+      reorderQuantity: Number(stored.reorderQuantity ?? 0),
+      unitCost: Number(stored.unitCost ?? 0),
+      price: Number(stored.price ?? 0),
+      warehouse: stored.warehouse ?? 'Johannesburg Central (JHB-01)',
+      warehouseId: stored.warehouseId ?? 'JHB-01',
+      binLocation: stored.binLocation ?? 'A-01',
+      imageUrl: stored.imageUrl,
+      isActive: stored.isActive ?? true,
+      createdAt: stored.createdAt ?? new Date().toISOString(),
+      updatedAt: stored.updatedAt ?? new Date().toISOString(),
+    };
+
+    if (existingIndex >= 0) products[existingIndex] = hydrated;
+    else products.push(hydrated);
+  }
+};
+
 export const findProductBySku = (sku: string): Product | undefined => {
   const normalized = sku.trim().toUpperCase();
   return products.find((p) => p.sku.toUpperCase() === normalized);
@@ -633,11 +663,30 @@ export const createProduct = (data: {
   binLocation: string;
   imageUrl?: string;
 }): ProductSnapshot => {
+  const normalizedSku = data.sku.trim().toUpperCase();
+  const normalizedName = data.name.trim();
+  if (!normalizedSku || !normalizedName || !data.category.trim()) {
+    throw new Error('SKU, product name, and category are required');
+  }
+  if (products.some((product) => product.sku === normalizedSku)) {
+    throw new Error(`A product with SKU ${normalizedSku} already exists`);
+  }
+
+  const nextBarcode = (): string => {
+    let barcode: string;
+    do {
+      const body = `600${String(Date.now()).slice(-9)}`.slice(0, 12);
+      const checksum = body.split('').reduce((sum, digit, index) => sum + Number(digit) * (index % 2 === 0 ? 1 : 3), 0);
+      barcode = `${body}${(10 - (checksum % 10)) % 10}`;
+    } while (products.some((product) => product.barcode === barcode));
+    return barcode;
+  };
+
   const newProduct: Product = {
     id: products.length + 1,
-    sku: data.sku.toUpperCase(),
-    barcode: data.barcode,
-    name: data.name,
+    sku: normalizedSku,
+    barcode: data.barcode?.trim() || nextBarcode(),
+    name: normalizedName,
     category: data.category,
     supplierId: Number(data.supplierId),
     stock: Number(data.stock),

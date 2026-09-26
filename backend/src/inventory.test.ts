@@ -2,17 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  commitReservedOrder,
   createOnlineOrder,
   createProduct,
   createReceiving,
   createReturn,
   createSaleTransaction,
   findProductById,
+  findProductBySku,
+  getAvailableStock,
+  getDashboardSummary,
+  getLowStockProducts,
+  getProductSnapshots,
+  getProductStatus,
+  products,
   recordCycleCount,
   releaseReservedOrder,
   stockAfterReceive,
   stockAfterReturn,
   stockAfterSale,
+  toProductSnapshot,
+  type Product,
 } from './inventory';
 import {
   authenticateUser,
@@ -224,9 +234,9 @@ test('generateToken and verifyToken preserve employee ID, sector, and role', () 
     employeeId: 'EMP-ADM-001',
     name: 'Sibusiso Mathonsi',
     email: 'sibbs.agentmathonsi@gmail.com',
-    role: 'ADMIN',
-    sector: 'System Administration',
-    status: 'ACTIVE',
+    role: 'ADMIN' as const,
+    sector: 'System Administration' as const,
+    status: 'ACTIVE' as const,
     isFirstLogin: false,
     mfaEnabled: true,
     emailVerified: true,
@@ -246,3 +256,110 @@ test('permissions keep admin separate from worker operations', () => {
   assert.equal(hasPermission('CASHIER', 'ADMIN'), false);
   assert.equal(hasPermission('WAREHOUSE_STAFF', 'CASHIER'), false);
 });
+
+test('inventory: findProductBySku normalizes whitespace and casing', () => {
+  const byLower = findProductBySku('milk-001');
+  assert.ok(byLower);
+  assert.equal(byLower.sku, 'MILK-001');
+
+  const withSpaces = findProductBySku('  bread-001  ');
+  assert.ok(withSpaces);
+  assert.equal(withSpaces.sku, 'BREAD-001');
+
+  const notFound = findProductBySku('UNKNOWN-SKU-404');
+  assert.equal(notFound, undefined);
+});
+
+test('inventory: getAvailableStock computes stock minus qtyReserved clamped to zero', () => {
+  const p1: Product = Object.assign({}, products[0], { stock: 10, qtyReserved: 4 });
+  assert.equal(getAvailableStock(p1), 6);
+
+  const p2: Product = Object.assign({}, products[0], { stock: 5, qtyReserved: 10 });
+  assert.equal(getAvailableStock(p2), 0);
+
+  const p3: Product = Object.assign({}, products[0], { stock: 20, qtyReserved: 0 });
+  assert.equal(getAvailableStock(p3), 20);
+});
+
+test('inventory: getProductStatus returns Reorder, Watch, and Healthy correctly', () => {
+  const zeroStock: Product = Object.assign({}, products[0], { stock: 2, qtyReserved: 2, reorderPoint: 5 });
+  assert.equal(getProductStatus(zeroStock), 'Reorder');
+
+  const watchStock: Product = Object.assign({}, products[0], { stock: 5, qtyReserved: 1, reorderPoint: 5 });
+  // available 4 <= reorderPoint 5 => Watch
+  assert.equal(getProductStatus(watchStock), 'Watch');
+
+  const healthyStock: Product = Object.assign({}, products[0], { stock: 30, qtyReserved: 2, reorderPoint: 10 });
+  // available 28 > reorderPoint 10 => Healthy
+  assert.equal(getProductStatus(healthyStock), 'Healthy');
+});
+
+test('inventory: toProductSnapshot adds availableStock and status properties', () => {
+  const p = findProductById(1);
+  assert.ok(p);
+  const snapshot = toProductSnapshot(p);
+  assert.equal(snapshot.id, p.id);
+  assert.equal(typeof snapshot.availableStock, 'number');
+  assert.ok(['Healthy', 'Watch', 'Reorder'].includes(snapshot.status));
+});
+
+test('inventory: getProductSnapshots and getLowStockProducts filter active items', () => {
+  const allSnapshots = getProductSnapshots();
+  assert.ok(allSnapshots.length > 0);
+  assert.ok(allSnapshots.every((item) => item.isActive));
+
+  const lowStock = getLowStockProducts();
+  assert.ok(Array.isArray(lowStock));
+  assert.ok(lowStock.every((item) => item.availableStock <= item.reorderPoint));
+});
+
+test('inventory: commitReservedOrder commits order, decrements physical stock and logs SALE movement', () => {
+  const product = createProduct({
+    sku: 'TEST-COMMIT-01',
+    barcode: '999000000002',
+    name: 'Commit Fulfillment Item',
+    category: 'Test',
+    supplierId: 1,
+    stock: 25,
+    reorderPoint: 5,
+    reorderQuantity: 10,
+    unitCost: 10,
+    price: 20,
+    warehouse: 'Johannesburg Central (JHB-01)',
+    warehouseId: 'JHB-01',
+    binLocation: 'TC-01',
+  });
+
+  const order = createOnlineOrder({
+    customerName: 'Sipho Ndlovu',
+    items: [{ productId: product.id, quantity: 5 }],
+  });
+  const liveProduct = findProductById(product.id);
+  assert.ok(liveProduct);
+  assert.equal(order.status, 'RESERVED');
+  assert.equal(liveProduct.qtyReserved, 5);
+  assert.equal(liveProduct.stock, 25);
+
+  const committed = commitReservedOrder(order.id);
+  assert.equal(committed.status, 'PAID');
+  assert.equal(liveProduct.stock, 20); // 25 - 5
+  assert.equal(liveProduct.qtyReserved, 0); // reserved released
+
+  // Committing already committed order throws
+  assert.throws(() => commitReservedOrder(order.id), /cannot be committed/);
+});
+
+test('inventory: getDashboardSummary aggregates valuation, margins, and movement counts', () => {
+  const summary = getDashboardSummary();
+  assert.ok(summary);
+  assert.equal(typeof summary.lowStockCount, 'number');
+  assert.equal(typeof summary.dailySales, 'number');
+  assert.equal(typeof summary.stockOnHand, 'number');
+  assert.equal(typeof summary.availableStock, 'number');
+  assert.equal(typeof summary.inventoryCostValue, 'number');
+  assert.equal(typeof summary.inventoryRetailValue, 'number');
+  assert.ok(summary.inventoryRetailValue >= summary.inventoryCostValue);
+  assert.ok(summary.grossMarginPct > 0);
+  assert.ok(Array.isArray(summary.topProducts));
+});
+
