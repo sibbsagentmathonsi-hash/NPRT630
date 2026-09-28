@@ -4,6 +4,20 @@ SyncStock is a cloud-native inventory and access-management system for retail an
 
 The repository also contains the project demonstration notes and design documents. The application source and its detailed setup/API guide are in [`Code/`](Code/) and [`Code/README.md`](Code/README.md).
 
+## Project Background and Aim
+
+Small and medium-sized retailers often manage stock with spreadsheets, disconnected point-of-sale and supplier tools, or manual counts. Those processes can leave staff with inaccurate stock records, delayed replenishment decisions, avoidable stockouts or overstock, and limited traceability when inventory changes. The project proposes a more connected and accessible way to manage those everyday operations.
+
+SyncStock's aim is to bring the main retail inventory workflows into one system. Its objectives are to:
+
+- Keep a shared product catalogue and record stock changes as sales, returns, receipts, and adjustments occur.
+- Give each staff role a focused workspace and restrict actions according to responsibilities.
+- Connect low-stock signals and demand estimates to supplier and purchase-order workflows.
+- Track reserved stock separately from available stock to support online-order fulfillment.
+- Preserve operational and security records that help managers investigate discrepancies and review activity.
+
+The business case and market analysis in the project documents provide academic context and projections; they are not measurements produced by this application.
+
 ## What the System Does
 
 SyncStock tracks products, stock levels, suppliers, purchasing, sales, returns, and online-order reservations. Stock changes are recorded as movements, while managers get operational and demand-forecasting views. Administrators govern employee accounts and warehouse facilities without inheriting operational permissions.
@@ -52,6 +66,14 @@ The frontend is a React multi-page Vite application. `index.html` is the worker 
 The data model includes users and roles, products and categories, warehouses, suppliers, purchase orders, stock movements, sales and sale items, online orders and reservations, and security audit records. Catalogue data is hydrated during backend startup so inventory state can be restored from persistence.
 
 Authentication supports email or employee-ID login, bcrypt password hashes, first-login password setup, JWT sessions, optional email verification codes, and TOTP multi-factor authentication. Authorization is enforced by role at the API. SMTP is optional for email delivery; local credentials and secrets belong in `Code/backend/.env`, never in commits.
+
+## Implemented Prototype and Design Vision
+
+The repository contains a working application prototype: one TypeScript Express API organized into domain modules, two React/Vite portals, Sequelize models backed by PostgreSQL, role-based access control, operational workflows, and formula-based forecasting from recorded stock movements and supplier lead times.
+
+The accompanying specifications describe a broader target architecture, including independently deployed microservices, event-bus communication, external POS/e-commerce/accounting integrations, machine-learning forecasting, and cloud scaling and availability targets. Those are design goals, not claims about the current code. In particular, the current forecast is rule-based rather than a trained machine-learning model, and the repository does not include a deployed cloud environment or external-system adapters.
+
+The implementation roadmap stages the work from project foundation and core stock control through purchasing, order reservations, and forecasting, with integrations and production deployment as later expansion areas.
 
 ## Technology
 
@@ -130,6 +152,8 @@ See the [detailed application guide](Code/README.md) for the complete endpoint l
 
 ## Project Documents
 
-- [`Documents/PROJECT PROBLEM STATEMEN1.docx`](Documents/PROJECT%20PROBLEM%20STATEMEN1.docx) describes the project problem.
-- [`Documents/System Design Specification.docx`](Documents/System%20Design%20Specification.docx) describes the proposed system design.
-- [`Documents/Inventory System Development Plan.docx`](Documents/Inventory%20System%20Development%20Plan.docx) and [`Implementation Roadmap.md`](Implementation%20Roadmap.md) describe planning and delivery.
+- [`Documents/PROJECT PROBLEM STATEMEN1.docx`](Documents/PROJECT%20PROBLEM%20STATEMEN1.docx) analyses SME inventory-management problems, their causes and business impact, and the proposed value proposition.
+- [`Documents/Inventory System Development Plan.docx`](Documents/Inventory%20System%20Development%20Plan.docx) describes user workflows, interface design, usability feedback, data entities, and development requirements.
+- [`Documents/System Design Specification.docx`](Documents/System%20Design%20Specification.docx) sets out the proposed architecture, functional and quality requirements, process models, and system design.
+- [`Implementation Roadmap.md`](Implementation%20Roadmap.md) translates the proposal into staged implementation goals and future expansion work.
+- [`Demo/Demo.md`](Demo/Demo.md) links to the project demonstration video.
