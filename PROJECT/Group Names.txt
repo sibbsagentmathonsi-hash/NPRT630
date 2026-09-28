@@ -1,0 +1,9 @@
+Names		Student-No
+
+Sibusiso Mathonsi		202339171
+Kegoikantse Sebetseba		202414220
+Lebogang Malatjie		202404978
+Agcobile Qabo			202469432
+
+GitHub repo
+https://github.com/sibbsagentmathonsi-hash/NPRT630
