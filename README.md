@@ -18,6 +18,27 @@ SyncStock's aim is to bring the main retail inventory workflows into one system.
 
 The business case and market analysis in the project documents provide academic context and projections; they are not measurements produced by this application.
 
+## Current Deployment
+
+SyncStock is currently hosted on a single AWS EC2 instance in the Europe (Stockholm) region. The frontend is served by Nginx, the Express API runs as a systemd service, and PostgreSQL stores application data on the instance.
+
+| Service | Current address or status |
+| --- | --- |
+| Worker portal | [http://13.60.233.63](http://13.60.233.63) |
+| Admin portal | [http://13.60.233.63/admin.html](http://13.60.233.63/admin.html) |
+| API health check | [http://13.60.233.63/api/health](http://13.60.233.63/api/health) |
+| Database | PostgreSQL, running locally on the EC2 instance |
+| Email relay | TurboSMTP is configured; SMTP authentication from EC2 was verified |
+| HTTPS | Not enabled; a hostname with public DNS pointing to the instance is still required |
+
+> [!CAUTION]
+> The hosted site currently uses **HTTP**, which does not encrypt traffic. Do not enter real passwords or sensitive business data until HTTPS is enabled. The EC2 public IP can change when the instance is stopped and started unless an Elastic IP is assigned. AWS charges may apply while the instance and its storage are provisioned.
+
+A trusted HTTPS certificate cannot be issued until a hostname you control resolves publicly to the instance. Once DNS is configured, allow inbound TCP port 443 and use a certificate authority such as Let's Encrypt with Certbot. Do not request a certificate before DNS is working.
+
+SMTP relay authentication is configured, but end-to-end delivery should still be checked by triggering an email verification flow and confirming receipt. Keep SMTP credentials on the server or in a secrets manager; never commit them to Git.
+
+---
 ## What the System Does
 
 SyncStock tracks products, stock levels, suppliers, purchasing, sales, returns, and online-order reservations. Stock changes are recorded as movements, while managers get operational and demand-forecasting views. Administrators govern employee accounts and warehouse facilities without inheriting operational permissions.
@@ -65,13 +86,13 @@ The frontend is a React multi-page Vite application. `index.html` is the worker 
 
 The data model includes users and roles, products and categories, warehouses, suppliers, purchase orders, stock movements, sales and sale items, online orders and reservations, and security audit records. Catalogue data is hydrated during backend startup so inventory state can be restored from persistence.
 
-Authentication supports email or employee-ID login, bcrypt password hashes, first-login password setup, JWT sessions, optional email verification codes, and TOTP multi-factor authentication. Authorization is enforced by role at the API. SMTP is optional for email delivery; local credentials and secrets belong in `Code/backend/.env`, never in commits.
+Authentication supports email or employee-ID login, bcrypt password hashes, first-login password setup, JWT sessions, optional email verification codes, and TOTP multi-factor authentication. Authorization is enforced by role at the API. SMTP is optional for local development. The current hosted instance uses TurboSMTP; local credentials and secrets belong in `Code/backend/.env`, never in commits.
 
 ## Implemented Prototype and Design Vision
 
 The repository contains a working application prototype: one TypeScript Express API organized into domain modules, two React/Vite portals, Sequelize models backed by PostgreSQL, role-based access control, operational workflows, and formula-based forecasting from recorded stock movements and supplier lead times.
 
-The accompanying specifications describe a broader target architecture, including independently deployed microservices, event-bus communication, external POS/e-commerce/accounting integrations, machine-learning forecasting, and cloud scaling and availability targets. Those are design goals, not claims about the current code. In particular, the current forecast is rule-based rather than a trained machine-learning model, and the repository does not include a deployed cloud environment or external-system adapters.
+The accompanying specifications describe a broader target architecture, including independently deployed microservices, event-bus communication, external POS/e-commerce/accounting integrations, machine-learning forecasting, and cloud scaling and availability targets. Those are design goals, not claims about the current code. In particular, the current forecast is rule-based rather than a trained machine-learning model, and the hosted deployment is a small single-instance EC2 setup, not a highly available cloud architecture. The repository also does not include external-system adapters.
 
 The implementation roadmap stages the work from project foundation and core stock control through purchasing, order reservations, and forecasting, with integrations and production deployment as later expansion areas.
 
