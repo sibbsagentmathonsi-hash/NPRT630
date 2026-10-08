@@ -79,6 +79,38 @@ Deployment notes report SMTP relay authentication configured on the EC2 host; en
 
 The accompanying project specifications describe a broader target architecture. They are design goals, not evidence that these capabilities are deployed in this prototype.
 
+## Current System Status
+
+This status describes the implemented prototype and the AWS demo, not the broader target architecture in the academic specifications. “Done” means implemented in the current application; it does not mean production-grade or independently deployed.
+
+### Done
+
+- Separate worker and administrator web portals, with route-level authorization for Admin, Manager, Cashier, Warehouse, and Procurement roles.
+- Core inventory workflows: product catalogue, stock by warehouse/bin, sales, returns, stock movements and adjustments, receiving, and cycle counts.
+- Purchase order creation, approval, cancellation, status updates, and partial/full receiving.
+- Online-order stock reservation, commit, and release workflows.
+- PostgreSQL persistence through Sequelize, including production startup checks and initial administrator setup.
+- Authentication features including password setup, JWT sessions, TOTP MFA, and production restrictions on demo account discovery and quick-switch.
+- Automated backend tests and production builds. The latest local verification completed with 60 backend tests passing and both backend and frontend builds succeeding.
+- A single-instance AWS EC2 demo serving the worker portal and PostgreSQL-backed API readiness check over HTTP.
+
+### Partially done
+
+- Forecasting provides a linear-regression demand trend, sparse-history fallbacks, and reorder suggestions; its accuracy has not been validated and it has no configured seasonal or promotion data source.
+- Persistence hydrates the main operational collections, but return history and some reference/seed data are not fully restored.
+- Purchase orders can be marked sent in the application, but no supplier notification or external procurement connection is configured.
+- Online orders support reservation and fulfillment state changes, but there is no external commerce connection or picking-task workflow.
+- Security includes role checks, password rules, MFA, and application audit records; audit records are not database-enforced immutable, and the recorded client IP is a loopback placeholder.
+- The AWS demo is a single host with PostgreSQL and basic health/readiness checks. It is HTTP-only and has no demonstrated high availability, backup/restore process, or verified operational service levels.
+
+### Not implemented
+
+- Independently deployed microservices, an API gateway, database-per-service, distributed message bus/saga, or multi-instance concurrency strategy.
+- Active payment, POS, e-commerce, accounting, shipping, or supplier-system adapters.
+- A validated/trained forecasting service, promotion/seasonality feed, inventory-turnover reporting, or EOQ optimization.
+- High availability, tested backup/restore, centralized monitoring, CI/CD, infrastructure-as-code, or an HTTPS deployment.
+- Automated end-to-end browser tests, PostgreSQL-backed integration tests, database migration tooling, or spreadsheet-import tooling.
+
 ---
 
 ## Current Runtime Architecture
@@ -164,7 +196,7 @@ sequenceDiagram
 ```
 
 > [!CAUTION]
-> The demo administrator password is seeded in source for local fallback use. Development/test fallback stores seeded passwords in plaintext; email OTP codes are written to logs; tokens are stored in `localStorage`; CORS is permissive; and `/api/auth/quick-switch` is unauthenticated. This prototype is not suitable for real user data without replacing demo credentials, removing demo switching, tightening CORS, and enabling HTTPS.
+> The production deployment is HTTP-only and does not encrypt browser traffic. Do not use it with real passwords or sensitive business data until HTTPS is configured. Production does not seed demo accounts and disables demo account discovery and quick-switch; development/test fallback has separate demo credentials and is not representative of production authentication. Email verification codes may be written to backend logs when SMTP delivery is not configured, tokens are stored in browser `localStorage`, and audit IP addresses use a loopback placeholder. The prototype is not production-ready for real user data.
 
 ---
 
@@ -600,7 +632,7 @@ npm.cmd run test --workspace backend
 The latest local run on 2026-10-08 passed **59 tests with 0 failures**. Rerun the command above after changing the code.
 
 > [!IMPORTANT]
-> Tests run with `NODE_ENV=test` and do not connect to PostgreSQL. `Code/backend/src/server.test.ts` is empty, so API route and database migration behavior are not covered by a committed integration suite. The frontend has no test/lint script; use the production build to verify it.
+> Tests run with `NODE_ENV=test` and do not connect to PostgreSQL. `Code/backend/src/server.test.ts` contains production-mode API behavior tests, but there is no PostgreSQL-backed integration suite or database migration test suite. The frontend has no test/lint script; use the production build to verify it.
 
 ---
 

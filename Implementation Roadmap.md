@@ -8,6 +8,23 @@ Source documents reviewed:
 - `Documents/System Design Specification.docx`
 - `Group Names.txt`
 
+## Current Delivery Status (2026-10-08)
+
+This roadmap began as a plan. The table below records the current prototype status; planned exit criteria are not implied to be complete merely because related functionality exists.
+
+| Phase | Status | Current evidence / remaining work |
+| :--- | :--- | :--- |
+| Phase 0: Project setup and technical foundation | **Partial** | Root `Code/` contains the React/Vite and Express workspaces and a Compose file for PostgreSQL/Redis. Redis is unused; database migrations, a one-command full app deployment, and CI are not provided. |
+| Phase 1: Core MVP | **Done for prototype scope** | Authentication, role-based portals, catalogue, bin inventory, sales, returns, receiving, adjustments, cycle counts, movements, and KPIs are implemented. Cycle-count approval and immutable database-enforced audit records are not. |
+| Phase 2: Procurement and replenishment | **Done for core workflows; partial overall** | Suppliers, low-stock draft POs, approval/status changes, and partial/full receiving are implemented. Sending does not notify a supplier; advanced delivery/quality notification workflows are absent. |
+| Phase 3: Order lifecycle and reservation logic | **Partial** | Orders can reserve, commit, and release inventory. Picking tasks, external payment/commerce coordination, and a tested multi-request concurrency guarantee are not implemented. |
+| Phase 4: Analytics, forecasting, and reporting | **Partial** | Regression-based demand estimates, fallbacks, reorder quantities, stockout risk, and operational KPIs exist. Forecast accuracy is unvalidated; turnover reporting, EOQ optimization, and configured demand-context feeds are absent. |
+| Phase 5: Integration and event-driven architecture | **Not done** | Provider-neutral interfaces exist, but there are no active vendor adapters, API gateway, broker/event bus, distributed saga, or event-driven service communication. |
+| Phase 6: Security, auditability, and compliance | **Partial** | Route-level role checks, password rules, JWT, TOTP MFA, production login restrictions, and application audit events exist. TLS, database-enforced audit immutability, accurate client-IP capture, tenant isolation, and full production hardening are absent. |
+| Phase 7: Deployment, testing, and operational readiness | **Partial** | A single AWS EC2 demo runs with PostgreSQL and has health/readiness endpoints. Backend automated tests and production builds pass (60 backend tests in the latest local verification). HTTPS, HA, tested backups/restores, CI/CD, infrastructure-as-code, PostgreSQL integration tests, browser E2E tests, and the spreadsheet migration template are absent. |
+
+The live demo is a single EC2 instance in Europe (Stockholm), verified at `http://13.63.238.187` on 2026-10-08. It is HTTP-only and should not be used with real passwords or sensitive business data. This deployment is separate from the local build/test result and does not constitute a production availability or recovery commitment.
+
 ## 1. Implementation Strategy
 
 The project should be implemented in staged releases. The documents describe a full cloud-native, microservices-based inventory platform with real-time synchronization, forecasting, supplier procurement, integrations, mobile warehouse workflows, security, and auditability. To make the project achievable, the first release should prove the core business value before expanding into the complete architecture.

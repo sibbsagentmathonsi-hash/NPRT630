@@ -53,6 +53,24 @@ Demand forecasting fits a simple linear regression to up to 730 days of daily st
 
 The project specifications also describe separately deployed microservices, database-per-service, an API gateway, a distributed message bus/saga, external system integrations, and cloud-scale availability/recovery targets. Those remain target architecture, not claims about this modular application. The repository provides request p95 metrics and readiness checks, but no HA deployment, backup/replication policy, CI/CD, centralized monitoring, or verified SLOs. A single EC2 demo is deployed separately; this repository does not include its production infrastructure automation.
 
+### Delivery Status Against the Project Roadmap
+
+“Done” below refers to the corresponding prototype capability being present, not to production-grade operation. The detailed limitations and role allowlists in this README remain applicable.
+
+| Status | Roadmap area | Current system |
+| :--- | :--- | :--- |
+| **Done** | Core MVP | Worker/admin portals, role-protected API routes, product and bin inventory, sales, returns, stock movements/adjustments, receiving, cycle counts, and dashboard KPIs |
+| **Done** | Procurement basics | Suppliers, low-stock purchase-order generation, approval/status transitions, and partial/full receipt |
+| **Done** | Basic reservation flow | Online-order stock reservation, commit, and release are implemented |
+| **Done** | Baseline tests and build | Backend unit/API behavior tests and backend/frontend production builds; latest local verification: 60 tests passed |
+| **Partial** | Persistence and audit | PostgreSQL persists core system data and application audit events; not every collection is fully restored, and audit immutability is not enforced by the database |
+| **Partial** | Forecasting and reporting | Explainable regression forecasts, fallback behavior, reorder suggestions, and KPIs; no validated accuracy, promotion feed, inventory-turnover report, or EOQ model |
+| **Partial** | Security hardening | Password policy, route allowlists, MFA, and production demo-login restrictions exist; no TLS on the live demo, audit IP is a placeholder, and codes may be logged when email delivery is not configured |
+| **Partial** | Deployment/operations | One AWS EC2 demo with PostgreSQL, nginx, systemd, and health/readiness checks; no HA, tested backup/restore, CI/CD, centralized monitoring, or verified SLOs |
+| **Not done** | Distributed architecture | No independently deployed services, API gateway, broker/event bus, distributed saga, or database-per-service |
+| **Not done** | External integrations | No active payment, POS, commerce, accounting, shipping, or supplier vendor adapter |
+| **Not done** | Full operational readiness | No production HTTPS configuration, infrastructure-as-code, PostgreSQL-backed integration suite, end-to-end browser suite, or spreadsheet migration tooling |
+
 | Area | Implemented | Still target / limitation |
 | :--- | :--- | :--- |
 | Role workflows | Admin, Manager, Cashier, Warehouse, and Procurement portal workflows with route-level authorization | Some actual allowlists differ from the original role matrix; see the access notes below |
@@ -732,7 +750,7 @@ npm.cmd run test --workspace backend
 | **Observability** | `observability.test.ts` | Per-route request/error counts and average/p95 calculation |
 
 > [!IMPORTANT]
-> The automated tests run with `NODE_ENV=test` and do not connect to PostgreSQL. `backend/src/server.test.ts` is currently empty, so API route and database migration behavior are not covered by a committed integration suite. The frontend has no test or lint script; use the root build to verify its bundle.
+> The automated tests run with `NODE_ENV=test` and do not connect to PostgreSQL. `backend/src/server.test.ts` contains production-mode API behavior tests, but there is no PostgreSQL-backed integration suite or database migration test suite. The frontend has no test or lint script; use the root build to verify its bundle.
 
 ---
 
