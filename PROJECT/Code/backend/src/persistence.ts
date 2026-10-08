@@ -154,6 +154,20 @@ export const persistReceiving = async (
   product: { id: number; stock: number; qtyReserved: number },
   movement: StockMovement
 ): Promise<void> => {
+  await persistStockMovementAndInventory(product, movement);
+};
+
+export const persistStockAdjustment = async (
+  product: { id: number; stock: number; qtyReserved: number },
+  movement: StockMovement
+): Promise<void> => {
+  await persistStockMovementAndInventory(product, movement);
+};
+
+const persistStockMovementAndInventory = async (
+  product: { id: number; stock: number; qtyReserved: number },
+  movement: StockMovement
+): Promise<void> => {
   await withDatabase(async (transaction) => {
     await persistMovement(movement, transaction);
     await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);

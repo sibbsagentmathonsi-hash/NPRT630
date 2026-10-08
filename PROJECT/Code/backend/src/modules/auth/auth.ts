@@ -114,7 +114,7 @@ export const logSecurityEvent = (
   return newLog;
 };
 
-export const users: User[] = [
+export const users: User[] = process.env.NODE_ENV === 'production' ? [] : [
   {
     id: 1,
     employeeId: 'EMP-ADM-001',
@@ -368,6 +368,9 @@ export const setFirstPassword = (
 
   if (!user) {
     return { success: false, error: 'Employee account not found' };
+  }
+  if (!user.isFirstLogin || user.status !== 'PENDING_SETUP') {
+    return { success: false, error: 'This account is not awaiting first-time password setup' };
   }
 
   user.password = newPassword;

@@ -8,6 +8,7 @@ import {
   categories,
   calculateSaleTotal,
   commitReservedOrder,
+  createStockAdjustment,
   createOnlineOrder,
   createProduct,
   createReceiving,
@@ -73,6 +74,7 @@ import {
   persistPurchaseOrder,
   persistProduct,
   persistReceiving,
+  persistStockAdjustment,
   persistReturn,
   persistSale,
   persistUser,
@@ -90,7 +92,18 @@ dotenv.config();
 export const app = express();
 const preferredPort = Number(process.env.PORT ?? 4000);
 
-app.use(cors());
+const configuredCorsOrigins = process.env.CORS_ORIGINS
+  ?.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedCorsOrigins = configuredCorsOrigins
+  ?? (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:5175', 'http://127.0.0.1:5175']);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    callback(null, !origin || allowedCorsOrigins.includes(origin));
+  },
+}));
 app.use(express.json());
 app.use(requestMetricsMiddleware);
 
@@ -236,6 +249,9 @@ app.get('/api/admin/metrics', authorize('ADMIN'), (_req, res) => {
 });
 
 app.get('/api/auth/demo-accounts', (_req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.sendStatus(404);
+  }
   res.json({ users: demoAccounts() });
 });
 
@@ -273,12 +289,18 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Mandatory First-Time Password Setup Wizard
-app.post('/api/auth/set-first-password', async (req, res) => {
-  const { employeeId, email, currentPassword, newPassword } = req.body ?? {};
+app.post('/api/auth/set-first-password', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
+  const { employeeId, email, newPassword } = req.body ?? {};
   const identifier = employeeId || email;
 
   if (!identifier || !newPassword) {
     return res.status(400).json({ error: 'Employee identifier and new password are required' });
+  }
+  if (
+    !req.user.isFirstLogin
+    || String(identifier).trim().toUpperCase() !== String(req.user.employeeId).toUpperCase()
+  ) {
+    return res.status(403).json({ error: 'A valid first-login session for this employee is required' });
   }
 
   const result = setFirstPassword(String(identifier), String(newPassword));
@@ -325,6 +347,9 @@ app.post('/api/auth/verify-mfa', async (req: any, res) => {
 
 // Quick-Switch Endpoint for instant signed token issuance
 app.post('/api/auth/quick-switch', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.sendStatus(404);
+  }
   const { employeeId } = req.body ?? {};
   const user = users.find((u) => u.employeeId === employeeId);
   if (!user) {
@@ -528,7 +553,7 @@ app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), async (req: a
   });
 });
 
-// Immutable Security Audit Logs Viewer (NFR-SEC-01)
+// Security Audit Logs Viewer
 app.get('/api/admin/audit-logs', authorize('ADMIN'), async (_req, res) => {
   const persistedLogs = await getPersistedAuditLogs();
   res.json({ logs: persistedLogs.length > 0 ? persistedLogs : securityAuditLogs });
@@ -795,6 +820,36 @@ app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: 
     });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to record receiving');
+  }
+});
+
+app.post('/api/inventory/adjustments', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
+  const { productId, quantity, type, reason, warehouseId, binCode } = req.body ?? {};
+  const adjustmentType: 'ADD' | 'DEDUCT' | undefined =
+    type === 'ADD' || type === 'DEDUCT' ? type : undefined;
+  if (productId === undefined || quantity === undefined || !adjustmentType || !reason) {
+    return res.status(400).json({ error: 'productId, quantity, type, and reason are required' });
+  }
+
+  try {
+    const result = createStockAdjustment(
+      Number(productId),
+      Number(quantity),
+      adjustmentType,
+      String(reason),
+      actorName(req),
+      warehouseId ? String(warehouseId) : undefined,
+      binCode ? String(binCode) : undefined,
+    );
+    await persistStockAdjustment(result.updatedProduct, result.movement);
+    return res.status(201).json({
+      message: 'Stock adjustment recorded',
+      movement: result.movement,
+      product: result.updatedProduct,
+      ...inventoryPayload(),
+    });
+  } catch (error) {
+    return handleDomainError(res, error, 'Unable to record stock adjustment');
   }
 });
 

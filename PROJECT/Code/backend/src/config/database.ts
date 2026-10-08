@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
-import { hydrateUsers, users } from '../modules/auth/auth';
+import { hydrateUsers, users, validatePasswordStrength } from '../modules/auth/auth';
 import { inventoryItems } from '../inventory';
 import { sequelize } from './sequelize';
 
@@ -103,23 +103,50 @@ export const connectDatabase = async (): Promise<boolean> => {
     const roles = ['ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'];
     await RoleModel.bulkCreate(roles.map((name) => ({ name })), { ignoreDuplicates: true });
 
-    for (const user of users) {
-      await UserModel.findOrCreate({
-        where: { employeeId: user.employeeId },
-        defaults: {
-          employeeId: user.employeeId,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          sector: user.sector,
-          status: user.status,
-          isFirstLogin: user.isFirstLogin,
-          mfaEnabled: user.mfaEnabled,
-          emailVerified: user.emailVerified,
-          passwordHash: await bcrypt.hash(user.password ?? '', 12),
-          lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
-        },
-      });
+    if (process.env.NODE_ENV === 'production') {
+      if (await UserModel.count() === 0) {
+        const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+        const adminPassword = process.env.ADMIN_PASSWORD;
+        if (!adminEmail || !adminPassword) {
+          throw new Error('Set ADMIN_EMAIL and ADMIN_PASSWORD to bootstrap the first production administrator.');
+        }
+        const passwordValidation = validatePasswordStrength(adminPassword);
+        if (!passwordValidation.isValid) {
+          throw new Error(`ADMIN_PASSWORD does not meet the password policy: ${passwordValidation.errors.join(', ')}`);
+        }
+
+        await UserModel.create({
+          employeeId: 'EMP-ADM-001',
+          name: process.env.ADMIN_NAME?.trim() || 'System Administrator',
+          email: adminEmail,
+          role: 'ADMIN',
+          sector: 'System Administration',
+          status: 'PENDING_SETUP',
+          isFirstLogin: true,
+          mfaEnabled: false,
+          emailVerified: true,
+          passwordHash: await bcrypt.hash(adminPassword, 12),
+        });
+      }
+    } else {
+      for (const user of users) {
+        await UserModel.findOrCreate({
+          where: { employeeId: user.employeeId },
+          defaults: {
+            employeeId: user.employeeId,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            sector: user.sector,
+            status: user.status,
+            isFirstLogin: user.isFirstLogin,
+            mfaEnabled: user.mfaEnabled,
+            emailVerified: user.emailVerified,
+            passwordHash: await bcrypt.hash(user.password ?? '', 12),
+            lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
+          },
+        });
+      }
     }
 
     // Step 4: Seed initial data if empty
@@ -153,6 +180,9 @@ export const connectDatabase = async (): Promise<boolean> => {
       CustomerOrderModel.findAll({ include: [{ model: CustomerOrderItemModel, as: 'items' }] }),
       CycleCountModel.findAll({ order: [['id', 'ASC']] }),
     ]);
+    if (process.env.NODE_ENV === 'production' && !storedUsers.some((user) => user.role === 'ADMIN')) {
+      throw new Error('Production database must contain an administrator account.');
+    }
     hydrateUsers(storedUsers.map((record) => record.toJSON() as any));
     hydrateSalesReceipts(storedSales.map((record) => record.toJSON() as any));
     hydrateStockMovements(storedMovements.map((record) => record.toJSON() as any));

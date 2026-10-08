@@ -754,6 +754,69 @@ export const receiveInventoryAtLocation = (
   return toProductSnapshot(product);
 };
 
+export const createStockAdjustment = (
+  productId: number,
+  quantity: number,
+  adjustmentType: 'ADD' | 'DEDUCT',
+  reason: string,
+  actor = 'Warehouse Staff',
+  warehouseId?: string,
+  binCode?: string,
+): { movement: StockMovement; updatedProduct: ProductSnapshot } => {
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error('Adjustment quantity must be a positive integer');
+  }
+  if (adjustmentType !== 'ADD' && adjustmentType !== 'DEDUCT') {
+    throw new Error('Adjustment type must be ADD or DEDUCT');
+  }
+  if (!reason.trim()) {
+    throw new Error('Adjustment reason is required');
+  }
+
+  const product = findProductById(productId);
+  if (!product) {
+    throw new Error(`Product not found for adjustment: ID ${productId}`);
+  }
+
+  const adjustmentWarehouseId = warehouseId?.trim() || product.warehouseId;
+  const adjustmentBinCode = binCode?.trim() || product.binLocation;
+  if (!adjustmentWarehouseId || !adjustmentBinCode) {
+    throw new Error('Warehouse and bin are required');
+  }
+
+  const location = inventoryItems.find((item) =>
+    item.productId === product.id
+    && item.warehouseId === adjustmentWarehouseId
+    && item.binCode === adjustmentBinCode
+  );
+  if (adjustmentType === 'DEDUCT' && (!location || quantity > location.qtyOnHand - location.qtyReserved)) {
+    throw new Error(`Insufficient available stock for ${product.name} at ${adjustmentWarehouseId}/${adjustmentBinCode}`);
+  }
+
+  const item = location ?? getOrCreateInventoryItem(product, adjustmentWarehouseId, adjustmentBinCode);
+  item.qtyOnHand += adjustmentType === 'ADD' ? quantity : -quantity;
+  item.updatedAt = new Date().toISOString();
+  syncProductInventoryTotals(product);
+  product.updatedAt = item.updatedAt;
+
+  const movement: StockMovement = {
+    id: stockMovements.length + 1,
+    productId: product.id,
+    sku: product.sku,
+    type: 'AUDIT_ADJUSTMENT',
+    quantity,
+    timestamp: item.updatedAt,
+    notes: `Manual stock adjustment (${adjustmentType === 'ADD' ? '+' : '-'}${quantity}): ${reason.trim()}`,
+    actor,
+    reference: `ADJ-${Date.now().toString().slice(-6)}`,
+    warehouseId: adjustmentWarehouseId,
+    binLocation: adjustmentBinCode,
+  };
+  stockMovements.unshift(movement);
+
+  return { movement, updatedProduct: toProductSnapshot(product) };
+};
+
 const ensureProductInventory = (product: Product): InventoryItem[] => {
   const locations = inventoryItems.filter((item) => item.productId === product.id);
   if (locations.length > 0) return locations;

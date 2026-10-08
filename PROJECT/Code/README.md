@@ -151,7 +151,7 @@ sequenceDiagram
     FE->>FE: Store token in localStorage
 ```
 
-In development/test memory fallback, seeded passwords are plaintext. Email verification codes are logged by the backend, and audit IP addresses currently use a loopback placeholder. Express currently uses permissive CORS, and the unauthenticated demo quick-switch route remains enabled. Configure TLS and restrictive CORS at a trusted reverse proxy; do not expose this setup with production user data.
+In development/test memory fallback, seeded passwords are plaintext. Production does not seed demo users; a new production database requires `ADMIN_EMAIL` and `ADMIN_PASSWORD` and forces the configured admin through first-login password setup. Existing databases from earlier versions must have any seeded demo accounts removed or rotated before deployment. First-password setup requires the employee's authenticated first-login token and cannot be reused after activation. Email verification codes are logged by the backend, and audit IP addresses currently use a loopback placeholder. Demo account discovery and unauthenticated quick-switch are disabled in production. CORS allows only the configured `CORS_ORIGINS` list (localhost Vite origins by default outside production); configure the deployed frontend origin explicitly and configure TLS at a trusted reverse proxy. The prototype is not production-ready for real user data.
 
 ## Role Workspaces
 
@@ -456,7 +456,7 @@ erDiagram
 | **Goods receiving** | Operator selects an open purchase order and enters quantity and destination warehouse/bin — stock is incremented and a movement is created. Condition and notes controls are currently not sent to the API |
 | **Partial receipt support** | If received quantity is less than ordered, PO status moves to PARTIALLY_RECEIVED; remaining quantity is tracked for follow-up receipts |
 | **Cycle count auditing** | Warehouse/bin selector; auditor steps through each product with +/− quantity steppers; submission reconciles only the selected bin and stores a cycle-count record plus stock movement |
-| **Stock adjustment** | The UI offers ADD/REMOVE and reason controls, but the current submit handler sends both as a positive receipt. REMOVE and actual bin-to-bin transfer are not implemented; do not use those controls to decrease stock |
+| **Stock adjustment** | ADD/DEDUCT writes an audited adjustment to the product's primary warehouse/bin. Deductions are rejected if they exceed unreserved stock. Inter-warehouse transfers are not implemented; use the PO receiving workflow for supplier receipts |
 | **Online order fulfilment** | Picker commits a reservation, which deducts physical stock and marks the order `PAID`, or releases it back to available if cancelled |
 | **Mobile scanner simulation mode** | Toggle switches the UI into a compact, touch-friendly scanner simulation layout suited for handheld devices |
 | **Four workspace tabs** | Receiving, Cycle Count, Stock Adjustments, Order Fulfilment |
@@ -616,7 +616,7 @@ Both the backend API and the Vite dev server start concurrently:
 ### System Administrator
 
 > [!CAUTION]
-> The code seeds a demo administrator (`EMP-ADM-001`) in `backend/src/modules/auth/auth.ts`; `ADMIN_EMAIL` and `ADMIN_PASSWORD` are not currently read by the application. The demo password is intentionally not repeated here because it is stored in source. Replace the bootstrap credential before any shared or production deployment, and do not rely on demo accounts for production identity provisioning.
+> Non-production builds include a demo administrator (`EMP-ADM-001`) in `backend/src/modules/auth/auth.ts`. Production does not seed demo users: for a new production database, set `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` before first start; the first login requires choosing a new password. The admin bootstrap settings are only used when the production database has no users.
 
 Admin portal: `http://localhost:5175/admin.html`.
 
@@ -648,12 +648,12 @@ All routes are served by the Express API on port `4000`. Authorization is enforc
 
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/auth/demo-accounts` | None | List seeded demo accounts |
+| `GET` | `/api/auth/demo-accounts` | None, non-production only | List seeded demo accounts; returns 404 in production |
 | `POST` | `/api/auth/login` | None | Authenticate by email, employee ID, or identifier |
-| `POST` | `/api/auth/set-first-password` | None | Set a first password |
+| `POST` | `/api/auth/set-first-password` | Authenticated first-login session | Set a first password once for the matching employee |
 | `POST` | `/api/auth/mfa/enroll` | Authenticated staff | Create TOTP enrollment URI |
 | `POST` | `/api/auth/verify-mfa` | None | Verify a TOTP code |
-| `POST` | `/api/auth/quick-switch` | None | Demo account switch; unsafe as a production login mechanism |
+| `POST` | `/api/auth/quick-switch` | None, non-production only | Demo account switch; returns 404 in production |
 | `POST` | `/api/auth/send-verification-code` | None | Send/simulate email verification code |
 | `POST` | `/api/auth/verify-email-code` | None | Verify email code |
 | `POST` | `/api/admin/employees` | Admin | Register employee |
@@ -680,6 +680,7 @@ All routes are served by the Express API on port `4000`. Authorization is enforc
 | `GET` | `/api/dashboard/summary` | Manager | Read operational KPIs |
 | `GET` | `/api/inventory/workspace` | Manager, Cashier, Warehouse, Procurement | Role-scoped workspace data |
 | `GET` | `/api/inventory/items?productId=:id` | Admin, Manager, Warehouse, Procurement | Read stock by warehouse/bin |
+| `POST` | `/api/inventory/adjustments` | Manager, Warehouse | Add/deduct stock at the product's primary bin; prevents deductions below reserved quantity |
 | `POST` | `/api/sales` | Manager, Cashier | Checkout; cash must cover total, Card/QR require provider authorization |
 | `GET` | `/api/sales/receipts` | Manager, Cashier | List receipts |
 | `POST` | `/api/returns` | Manager, Cashier | Process return; electronic receipts require provider refund |
@@ -707,7 +708,7 @@ All routes are served by the Express API on port `4000`. Authorization is enforc
 | `PATCH` | `/api/orders/:id/commit` | Manager, Cashier, Warehouse | Commit reservation |
 | `PATCH` | `/api/orders/:id/release` | Manager, Cashier, Warehouse | Release reservation |
 
-These are the implemented routes; there are no separate `/api/admin/products`, `/api/admin/suppliers`, `/api/admin/purchase-orders`, or `/api/admin/forecast` aliases. Admin uses the shared endpoints where authorized. The unauthenticated `quick-switch` route is a demo shortcut and must be removed/restricted before production use.
+These are the implemented routes; there are no separate `/api/admin/products`, `/api/admin/suppliers`, `/api/admin/purchase-orders`, or `/api/admin/forecast` aliases. Admin uses the shared endpoints where authorized. Demo account discovery and the unauthenticated `quick-switch` route are available only outside production; neither can issue or disclose demo sessions in production.
 
 ---
 
@@ -749,6 +750,10 @@ Configure `backend/.env` (copy from `backend/.env.example`):
 | `DB_PASSWORD` | *(required)* | Database password |
 | `DB_NAME` | `inventory_db` | PostgreSQL schema / database name |
 | `JWT_SECRET` | *(required)* | HMAC-SHA256 signing key for session tokens |
+| `CORS_ORIGINS` | Local Vite origins in the example; empty if unset in production | Comma-separated browser origins allowed to call the API; set the deployed frontend origin in production |
+| `ADMIN_NAME` | `System Administrator` | Optional display name for first production admin bootstrap |
+| `ADMIN_EMAIL` | *(required for a new production database)* | Email for the initial production administrator |
+| `ADMIN_PASSWORD` | *(required for a new production database)* | Strong one-time password for initial administrator setup |
 | `SMTP_HOST` | *(optional)* | SMTP relay for email OTP delivery |
 | `SMTP_PORT` | `587` | SMTP relay port |
 | `SMTP_SECURE` | `false` | Use TLS for SMTP connection |
@@ -758,7 +763,7 @@ Configure `backend/.env` (copy from `backend/.env.example`):
 
 > [!CAUTION]
 > Never commit `backend/.env` to version control. It is listed in `.gitignore`. Use `backend/.env.example` as the template — it contains only placeholder values.
-> The backend will not start without `DB_PASSWORD` and `JWT_SECRET`; provide unique values through `backend/.env` or the deployment environment.
+> The backend will not start without `DB_PASSWORD` and `JWT_SECRET`; provide unique values through `backend/.env` or the deployment environment. A new production database also requires `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Set `CORS_ORIGINS` to the exact frontend origin(s) in production.
 
 ---
 

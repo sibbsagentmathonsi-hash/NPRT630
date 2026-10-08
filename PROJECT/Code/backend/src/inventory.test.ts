@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.JWT_SECRET ??= 'test-only-jwt-secret-for-inventory-tests';
+process.env.NODE_ENV = 'test';
 
 import {
   commitReservedOrder,
+  createStockAdjustment,
   createOnlineOrder,
   createProduct,
   createReceiving,
@@ -52,6 +54,50 @@ test('return restores stock', () => {
 
 test('receiving adds stock when quantity is valid', () => {
   assert.equal(stockAfterReceive(12, 8), 20);
+});
+
+test('manual stock adjustments add and deduct stock with signed audit details', () => {
+  const product = createProduct({
+    sku: 'ADJUST-001',
+    barcode: '',
+    name: 'Adjustment Test Product',
+    category: 'Office Supplies',
+    supplierId: 1,
+    stock: 8,
+    reorderPoint: 2,
+    reorderQuantity: 5,
+    unitCost: 1,
+    price: 2,
+    warehouseId: 'JHB-01',
+    binLocation: 'TEST-01',
+  });
+
+  const deduction = createStockAdjustment(product.id, 3, 'DEDUCT', 'Damaged goods', 'Tester');
+  assert.equal(deduction.updatedProduct.stock, 5);
+  assert.equal(deduction.movement.type, 'AUDIT_ADJUSTMENT');
+  assert.match(deduction.movement.notes ?? '', /-3/);
+  assert.equal(deduction.movement.actor, 'Tester');
+
+  assert.throws(
+    () => createStockAdjustment(product.id, 6, 'DEDUCT', 'Excess deduction'),
+    /Insufficient available stock/
+  );
+  assert.equal(findProductById(product.id)?.stock, 5);
+
+  const addition = createStockAdjustment(product.id, 2, 'ADD', 'Stock correction');
+  assert.equal(addition.updatedProduct.stock, 7);
+  assert.match(addition.movement.notes ?? '', /\+2/);
+
+  const reservedOrder = createOnlineOrder({
+    customerName: 'Adjustment test reservation',
+    items: [{ productId: product.id, quantity: 3 }],
+  });
+  assert.throws(
+    () => createStockAdjustment(product.id, 5, 'DEDUCT', 'Reserved stock protection'),
+    /Insufficient available stock/
+  );
+  assert.equal(findProductById(product.id)?.stock, 7);
+  releaseReservedOrder(reservedOrder.id);
 });
 
 test('sale rejects non-whole quantities', () => {
