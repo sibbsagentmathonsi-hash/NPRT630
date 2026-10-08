@@ -2,10 +2,13 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
 
 import {
   categories,
+  calculateSaleTotal,
   commitReservedOrder,
+  createStockAdjustment,
   createOnlineOrder,
   createProduct,
   createReceiving,
@@ -14,6 +17,7 @@ import {
   customerOrders,
   cycleCounts,
   getDashboardSummary,
+  getInventoryItems,
   getLowStockProducts,
   getProductSnapshots,
   products,
@@ -34,6 +38,7 @@ import {
   getUsersByRole,
   logSecurityEvent,
   registerEmployee,
+  setSecurityAuditWriter,
   securityAuditLogs,
   sendEmailVerificationCode,
   setFirstPassword,
@@ -57,15 +62,19 @@ import {
   suppliers,
 } from './modules/procurement/procurement';
 import { calculateForecast, calculateForecasts } from './modules/forecasting/forecasting';
+import { authorizeElectronicPayment, refundElectronicPayment, voidElectronicPayment, type ElectronicPaymentMethod } from './modules/integrations/contracts';
+import { getRequestMetrics, requestMetricsMiddleware } from './observability';
 import {
   persistCustomerOrder,
   persistCustomerOrderStatus,
   getPersistedAuditLogs,
   getWarehouses,
   persistAuditLog,
+  persistCycleCount,
   persistPurchaseOrder,
   persistProduct,
   persistReceiving,
+  persistStockAdjustment,
   persistReturn,
   persistSale,
   persistUser,
@@ -74,6 +83,7 @@ import {
   saveWarehouse,
   deleteWarehouse,
   persistUserVerification,
+  isDatabaseReady,
   setDatabaseReady,
 } from './persistence';
 
@@ -82,8 +92,20 @@ dotenv.config();
 export const app = express();
 const preferredPort = Number(process.env.PORT ?? 4000);
 
-app.use(cors());
+const configuredCorsOrigins = process.env.CORS_ORIGINS
+  ?.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedCorsOrigins = configuredCorsOrigins
+  ?? (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:5175', 'http://127.0.0.1:5175']);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    callback(null, !origin || allowedCorsOrigins.includes(origin));
+  },
+}));
 app.use(express.json());
+app.use(requestMetricsMiddleware);
 
 type TokenPayload = {
   id: number;
@@ -113,24 +135,6 @@ const authorize = (...allowedRoles: UserRole[]) => (req: any, res: any, next: an
 
   if (!token) {
     return res.status(401).json({ error: 'Missing bearer token' });
-  }
-
-  if (token === 'demo-initial-token') {
-    const defaultAdmin = users[0];
-    if (!roleCanAccess(defaultAdmin.role, allowedRoles)) {
-      return res.status(403).json({ error: 'Insufficient permissions for this operation' });
-    }
-
-    req.user = {
-      id: defaultAdmin.id,
-      employeeId: defaultAdmin.employeeId,
-      email: defaultAdmin.email,
-      name: defaultAdmin.name,
-      role: defaultAdmin.role,
-      sector: defaultAdmin.sector,
-      isFirstLogin: defaultAdmin.isFirstLogin,
-    };
-    return next();
   }
 
   try {
@@ -225,11 +229,29 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     service: 'inventory-api',
     version: '2.0.0-cloud-native',
+    uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
 });
 
+app.get('/api/health/ready', (_req, res) => {
+  const databaseConnected = isDatabaseReady();
+  const ready = databaseConnected || process.env.NODE_ENV !== 'production';
+  return res.status(ready ? 200 : 503).json({
+    status: ready ? 'ready' : 'not-ready',
+    storage: databaseConnected ? 'postgres' : 'in-memory',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/api/admin/metrics', authorize('ADMIN'), (_req, res) => {
+  res.json({ uptimeSeconds: Math.floor(process.uptime()), routes: getRequestMetrics() });
+});
+
 app.get('/api/auth/demo-accounts', (_req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.sendStatus(404);
+  }
   res.json({ users: demoAccounts() });
 });
 
@@ -267,12 +289,18 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Mandatory First-Time Password Setup Wizard
-app.post('/api/auth/set-first-password', async (req, res) => {
-  const { employeeId, email, currentPassword, newPassword } = req.body ?? {};
+app.post('/api/auth/set-first-password', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
+  const { employeeId, email, newPassword } = req.body ?? {};
   const identifier = employeeId || email;
 
   if (!identifier || !newPassword) {
     return res.status(400).json({ error: 'Employee identifier and new password are required' });
+  }
+  if (
+    !req.user.isFirstLogin
+    || String(identifier).trim().toUpperCase() !== String(req.user.employeeId).toUpperCase()
+  ) {
+    return res.status(403).json({ error: 'A valid first-login session for this employee is required' });
   }
 
   const result = setFirstPassword(String(identifier), String(newPassword));
@@ -319,6 +347,9 @@ app.post('/api/auth/verify-mfa', async (req: any, res) => {
 
 // Quick-Switch Endpoint for instant signed token issuance
 app.post('/api/auth/quick-switch', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.sendStatus(404);
+  }
   const { employeeId } = req.body ?? {};
   const user = users.find((u) => u.employeeId === employeeId);
   if (!user) {
@@ -441,14 +472,13 @@ app.patch('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res) 
 
   await persistUserState(target);
 
-  const auditLog = logSecurityEvent(
+  logSecurityEvent(
     'USER_ROLE_UPDATED',
     req.user.email,
     'ADMIN',
     `Updated permissions/status for ${target.name} (${target.employeeId}) to Role: ${target.role}, Status: ${target.status}`,
     target.employeeId
   );
-  await persistAuditLog(auditLog);
 
   return res.json({
     message: 'Employee updated successfully',
@@ -466,8 +496,7 @@ app.delete('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res)
   const index = users.findIndex((u) => u.id === userId);
   users.splice(index, 1);
   await removeUser(userId);
-  const auditLog = logSecurityEvent('USER_STATUS_UPDATED', req.user.email, 'ADMIN', `Deleted employee ${target.name} (${target.employeeId})`, target.employeeId);
-  await persistAuditLog(auditLog);
+  logSecurityEvent('USER_STATUS_UPDATED', req.user.email, 'ADMIN', `Deleted employee ${target.name} (${target.employeeId})`, target.employeeId);
   return res.json({ message: 'Employee deleted successfully', employees: demoAccounts() });
 });
 
@@ -485,14 +514,13 @@ app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), async (r
   target.status = 'PENDING_SETUP';
   await persistUser(target, await bcrypt.hash('ResetPass123!', 12));
 
-  const auditLog = logSecurityEvent(
+  logSecurityEvent(
     'PASSWORD_RESET_TRIGGERED',
     req.user.email,
     'ADMIN',
     `Admin triggered password reset for ${target.name} (${target.employeeId})`,
     target.employeeId
   );
-  await persistAuditLog(auditLog);
 
   return res.json({
     message: `Password reset to temporary password 'ResetPass123!'. User must change password on next login.`,
@@ -511,14 +539,13 @@ app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), async (req: a
   target.mfaEnabled = false;
   await persistUserState(target);
 
-  const auditLog = logSecurityEvent(
+  logSecurityEvent(
     'MFA_RESET',
     req.user.email,
     'ADMIN',
     `Admin reset MFA device for ${target.name} (${target.employeeId})`,
     target.employeeId
   );
-  await persistAuditLog(auditLog);
 
   return res.json({
     message: `MFA device reset for ${target.name}. User will be prompted to re-enroll.`,
@@ -526,7 +553,7 @@ app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), async (req: a
   });
 });
 
-// Immutable Security Audit Logs Viewer (NFR-SEC-01)
+// Security Audit Logs Viewer
 app.get('/api/admin/audit-logs', authorize('ADMIN'), async (_req, res) => {
   const persistedLogs = await getPersistedAuditLogs();
   res.json({ logs: persistedLogs.length > 0 ? persistedLogs : securityAuditLogs });
@@ -636,19 +663,47 @@ app.get('/api/inventory/workspace', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_S
   res.json(workspacePayload(req.user.role));
 });
 
+app.get('/api/inventory/items', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (req, res) => {
+  const productId = req.query.productId === undefined ? undefined : Number(req.query.productId);
+  if (productId !== undefined && (!Number.isInteger(productId) || productId <= 0)) {
+    return res.status(400).json({ error: 'productId must be a positive integer' });
+  }
+  return res.json({ inventoryItems: getInventoryItems(productId) });
+});
+
 // ==========================================
 // 5. POINT OF SALE & PROCESS RETURNS (CASHIER)
 // ==========================================
 
 // POS Sale Checkout (< 30s 5-item transaction support)
 app.post('/api/sales', authorize('MANAGER', 'CASHIER'), async (req: any, res) => {
+  let paymentReference: string | undefined;
   try {
+    const items = toSaleItems(req.body);
+    const paymentMethod = req.body?.paymentMethod ?? 'CASH';
+    if (!['CASH', 'CARD', 'QR'].includes(paymentMethod)) {
+      return res.status(400).json({ error: 'Payment method must be CASH, CARD, or QR' });
+    }
+    const discountPercent = Number(req.body?.discountPercent ?? 0);
+    const total = calculateSaleTotal(items, discountPercent);
+
+    if (paymentMethod !== 'CASH') {
+      const authorization = await authorizeElectronicPayment({
+        amount: total,
+        currency: 'ZAR',
+        method: paymentMethod as ElectronicPaymentMethod,
+        idempotencyKey: randomUUID(),
+      });
+      paymentReference = authorization.reference;
+    }
+
     const saleResult = createSaleTransaction(toSaleItems(req.body), {
       cashierName: req.user?.name || req.user?.email || 'Cashier',
       cashierEmployeeId: req.user?.employeeId || 'EMP-CSH-201',
-      paymentMethod: req.body?.paymentMethod || 'CASH',
-      discountPercent: Number(req.body?.discountPercent ?? 0),
-      tenderAmount: req.body?.tenderAmount ? Number(req.body.tenderAmount) : undefined,
+      paymentMethod,
+      paymentReference,
+      discountPercent,
+      tenderAmount: req.body?.tenderAmount === undefined ? undefined : Number(req.body.tenderAmount),
       notes: req.body?.notes ? String(req.body.notes) : undefined,
     });
     await persistSale(saleResult.receipt, saleResult.movements, getProductSnapshots());
@@ -660,6 +715,11 @@ app.post('/api/sales', authorize('MANAGER', 'CASHIER'), async (req: any, res) =>
       ...inventoryPayload(),
     });
   } catch (error) {
+    if (paymentReference) {
+      await voidElectronicPayment(paymentReference).catch((voidError) => {
+        console.error('Unable to void payment authorization:', voidError instanceof Error ? voidError.message : voidError);
+      });
+    }
     return handleDomainError(res, error, 'Unable to complete sale transaction');
   }
 });
@@ -677,9 +737,28 @@ app.post('/api/returns', authorize('MANAGER', 'CASHIER'), async (req: any, res) 
   }
 
   try {
+    const receipt = receiptNumber
+      ? salesReceipts.find((entry) => entry.receiptNumber.toUpperCase() === String(receiptNumber).trim().toUpperCase())
+      : undefined;
+    const purchasedLine = receipt?.items.find((item) => item.productId === Number(productId));
+    if (receipt && (!purchasedLine || Number(quantity) > purchasedLine.quantity)) {
+      return res.status(400).json({ error: 'Return quantity exceeds the quantity on the original receipt' });
+    }
+    if (receipt && receipt.paymentMethod !== 'CASH') {
+      if (!receipt.paymentReference) {
+        return res.status(409).json({ error: 'Cannot refund this electronic sale: no provider authorization is recorded' });
+      }
+      await refundElectronicPayment(
+        receipt.paymentReference,
+        Number(((purchasedLine!.unitPrice) * Number(quantity)).toFixed(2)),
+        randomUUID(),
+      );
+    }
+
     const result = createReturn({
       productId: Number(productId),
       quantity: Number(quantity),
+      unitPrice: purchasedLine?.unitPrice,
       reason: (reason as ReturnReason) || 'Customer Changed Mind',
       notes: notes ? String(notes) : undefined,
       actor: `${req.user?.name || 'Cashier'} (${req.user?.employeeId || 'STAFF'})`,
@@ -715,7 +794,7 @@ app.post('/api/returns', authorize('MANAGER', 'CASHIER'), async (req: any, res) 
 
 // Receiving Goods against PO with Damage/Shortage Flags
 app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
-  const { productId, quantity, notes, poNumber } = req.body ?? {};
+  const { productId, quantity, notes, poNumber, warehouseId, binCode } = req.body ?? {};
 
   if (!productId || !quantity) {
     return res.status(400).json({ error: 'productId and quantity are required' });
@@ -727,7 +806,9 @@ app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: 
       Number(quantity),
       notes ? String(notes) : undefined,
       `${req.user?.name || 'Warehouse Staff'} (${req.user?.employeeId || 'STAFF'})`,
-      poNumber ? String(poNumber) : undefined
+      poNumber ? String(poNumber) : undefined,
+      warehouseId ? String(warehouseId) : undefined,
+      binCode ? String(binCode) : undefined
     );
     await persistReceiving(result.updatedProduct, result.movement);
 
@@ -742,8 +823,38 @@ app.post('/api/receiving', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: 
   }
 });
 
+app.post('/api/inventory/adjustments', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
+  const { productId, quantity, type, reason, warehouseId, binCode } = req.body ?? {};
+  const adjustmentType: 'ADD' | 'DEDUCT' | undefined =
+    type === 'ADD' || type === 'DEDUCT' ? type : undefined;
+  if (productId === undefined || quantity === undefined || !adjustmentType || !reason) {
+    return res.status(400).json({ error: 'productId, quantity, type, and reason are required' });
+  }
+
+  try {
+    const result = createStockAdjustment(
+      Number(productId),
+      Number(quantity),
+      adjustmentType,
+      String(reason),
+      actorName(req),
+      warehouseId ? String(warehouseId) : undefined,
+      binCode ? String(binCode) : undefined,
+    );
+    await persistStockAdjustment(result.updatedProduct, result.movement);
+    return res.status(201).json({
+      message: 'Stock adjustment recorded',
+      movement: result.movement,
+      product: result.updatedProduct,
+      ...inventoryPayload(),
+    });
+  } catch (error) {
+    return handleDomainError(res, error, 'Unable to record stock adjustment');
+  }
+});
+
 // Cycle Count / Inventory Audit (Design Iteration 1)
-app.post('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), (req: any, res) => {
+app.post('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
   const { warehouseId, binCode, items, notes } = req.body ?? {};
 
   if (!warehouseId || !binCode || !Array.isArray(items) || items.length === 0) {
@@ -761,6 +872,7 @@ app.post('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), (req: any
       actor: `${req.user?.name || 'Warehouse Staff'} (${req.user?.employeeId || 'STAFF'})`,
       notes: notes ? String(notes) : undefined,
     });
+    await persistCycleCount(record, getProductSnapshots());
 
     return res.status(201).json({
       message: `Cycle count audit ${record.auditNumber} submitted and reconciled`,
@@ -847,7 +959,18 @@ app.patch('/api/purchase-orders/:id/cancel', authorize('MANAGER', 'PROCUREMENT_S
 
 app.patch('/api/purchase-orders/:id/receive', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (req: any, res) => {
   try {
-    const purchaseOrder = receivePurchaseOrder(Number(req.params.id), Number(req.body?.quantity), actorName(req));
+    const receivedOrder = receivePurchaseOrder(
+      Number(req.params.id),
+      Number(req.body?.quantity),
+      actorName(req),
+      req.body?.warehouseId ? String(req.body.warehouseId) : undefined,
+      req.body?.binCode ? String(req.body.binCode) : undefined,
+    );
+    const { receivingMovement, ...purchaseOrder } = receivedOrder;
+    const product = products.find((entry) => entry.sku === purchaseOrder.sku);
+    if (product && receivingMovement) {
+      await persistReceiving(toProductSnapshot(product), receivingMovement);
+    }
     await persistPurchaseOrder(purchaseOrder);
     return res.json({ message: 'Purchase order received', purchaseOrder, purchaseOrders: getPurchaseOrders(), ...inventoryPayload() });
   } catch (error) {
@@ -932,6 +1055,16 @@ const startServer = (port: number) => {
 if (process.env.NODE_ENV !== 'test') {
   connectDatabase().then((databaseConnected) => {
     setDatabaseReady(databaseConnected);
+    if (process.env.NODE_ENV === 'production' && !databaseConnected) {
+      console.error('PostgreSQL is unavailable; refusing to start production API with in-memory storage.');
+      process.exitCode = 1;
+      return;
+    }
+    setSecurityAuditWriter(databaseConnected ? (log) => {
+      void persistAuditLog(log).catch((error) => {
+        console.error('Unable to persist security audit event:', error instanceof Error ? error.message : error);
+      });
+    } : undefined);
     startServer(preferredPort);
   });
 }

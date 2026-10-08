@@ -118,6 +118,61 @@ WarehouseModel.init(
   { sequelize, tableName: 'warehouses', timestamps: true }
 );
 
+class InventoryItemModel extends Model {
+  declare id: string;
+  declare productId: number;
+  declare warehouseId: string;
+  declare binCode: string;
+  declare qtyOnHand: number;
+  declare qtyReserved: number;
+  declare updatedAt: Date;
+}
+
+InventoryItemModel.init(
+  {
+    id: { type: DataTypes.STRING(200), primaryKey: true },
+    productId: { type: DataTypes.INTEGER, allowNull: false },
+    warehouseId: { type: DataTypes.STRING(30), allowNull: false },
+    binCode: { type: DataTypes.STRING(40), allowNull: false },
+    qtyOnHand: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    qtyReserved: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    updatedAt: { type: DataTypes.DATE, allowNull: false },
+  },
+  {
+    sequelize,
+    tableName: 'inventory_items',
+    timestamps: false,
+    indexes: [{ unique: true, fields: ['productId', 'warehouseId', 'binCode'] }],
+  }
+);
+
+class CycleCountModel extends Model {
+  declare id: number;
+  declare auditNumber: string;
+  declare warehouseId: string;
+  declare binCode: string;
+  declare items: unknown[];
+  declare status: string;
+  declare performedBy: string;
+  declare performedAt: Date;
+  declare managerNotes?: string;
+}
+
+CycleCountModel.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    auditNumber: { type: DataTypes.STRING(50), allowNull: false, unique: true },
+    warehouseId: { type: DataTypes.STRING(30), allowNull: false },
+    binCode: { type: DataTypes.STRING(40), allowNull: false },
+    items: { type: DataTypes.JSONB, allowNull: false },
+    status: { type: DataTypes.STRING(30), allowNull: false },
+    performedBy: { type: DataTypes.STRING(150), allowNull: false },
+    performedAt: { type: DataTypes.DATE, allowNull: false },
+    managerNotes: { type: DataTypes.TEXT, allowNull: true },
+  },
+  { sequelize, tableName: 'cycle_counts', timestamps: false }
+);
+
 class SaleModel extends Model {
   declare id: number;
   declare receiptNumber: string;
@@ -126,6 +181,7 @@ class SaleModel extends Model {
   declare discountAmount: number;
   declare total: number;
   declare paymentMethod: string;
+  declare paymentReference?: string;
   declare tenderAmount?: number;
   declare changeAmount?: number;
   declare cashierName: string;
@@ -142,6 +198,7 @@ SaleModel.init(
     discountAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
     total: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
     paymentMethod: { type: DataTypes.STRING(20), allowNull: false },
+    paymentReference: { type: DataTypes.STRING(120), allowNull: true },
     tenderAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     changeAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     cashierName: { type: DataTypes.STRING(150), allowNull: false },
@@ -354,6 +411,8 @@ export {
   UserModel,
   AuditLogModel,
   WarehouseModel,
+  InventoryItemModel,
+  CycleCountModel,
   SaleModel,
   SaleItemModel,
   ReturnModel,

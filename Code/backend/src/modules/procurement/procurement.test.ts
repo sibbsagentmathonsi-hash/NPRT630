@@ -13,7 +13,7 @@ import {
   sendPurchaseOrder,
   suppliers,
 } from './procurement';
-import { findProductBySku } from '../../inventory';
+import { findProductBySku, getInventoryItems } from '../../inventory';
 
 test('procurement: getPurchaseOrders returns formatted view with supplier names and remaining qty', () => {
   const orders = getPurchaseOrders();
@@ -81,10 +81,11 @@ test('procurement: receivePurchaseOrder handles partial receiving then full rece
   sendPurchaseOrder(order.id);
 
   // Partial receiving: 8 of 20
-  const partial = receivePurchaseOrder(order.id, 8, 'Hlonela Dlamini (EMP-WRH-301)');
+  const partial = receivePurchaseOrder(order.id, 8, 'Hlonela Dlamini (EMP-WRH-301)', 'CPT-02', 'T-20');
   assert.equal(partial.status, 'PARTIALLY_RECEIVED');
   assert.equal(partial.receivedQuantity, 8);
   assert.equal(partial.remainingQuantity, 12);
+  assert.equal(getInventoryItems(product.id).find((item) => item.warehouseId === 'CPT-02' && item.binCode === 'T-20')?.qtyOnHand, 8);
   assert.equal(product.stock, stockBefore + 8);
 
   // Attempting to receive more than remaining (13 > 12) throws

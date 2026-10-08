@@ -48,13 +48,13 @@ SyncStock 2.0 provides dedicated workspaces for each operational role in a retai
 
 ## Deployment Status
 
-SyncStock is deployed as a single-instance demo on AWS EC2 in the Europe (Stockholm) region. On 2026-10-08, the EC2 console showed the `syncstock-app` instance running at `51.21.170.9`; the worker portal, admin portal, and API health endpoint responded over HTTP. This is a single-server demo, not a highly available production deployment. The latest workspace changes in `Code/` have not been deployed to that instance.
+SyncStock is deployed as a single-instance demo on AWS EC2 in the Europe (Stockholm) region. On 2026-10-08, the worker portal and API readiness endpoint were verified over HTTP at `13.63.238.187`. This is a single-server demo, not a highly available production deployment. The deployed application source is now maintained in the root `Code/` directory.
 
 | Service | Current address / status |
 | :--- | :--- |
-| Worker Operations Portal | [http://51.21.170.9](http://51.21.170.9) |
-| Admin Governance Portal | [http://51.21.170.9/admin.html](http://51.21.170.9/admin.html) |
-| API health check | [http://51.21.170.9/api/health](http://51.21.170.9/api/health) |
+| Worker Operations Portal | [http://13.63.238.187](http://13.63.238.187) |
+| Admin Governance Portal | [http://13.63.238.187/admin.html](http://13.63.238.187/admin.html) |
+| API readiness check | [http://13.63.238.187/api/health/ready](http://13.63.238.187/api/health/ready) |
 | PostgreSQL | Running locally on the EC2 instance |
 | Email delivery | SMTP settings are deployment-specific; verify end-to-end delivery before relying on it |
 | HTTPS | Not enabled yet; a hostname that resolves to the instance is required before a trusted certificate can be issued |

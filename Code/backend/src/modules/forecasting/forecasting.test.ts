@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { calculateForecast, calculateForecasts } from './forecasting';
+import { calculateForecast, calculateForecasts, trainDailyDemandModel } from './forecasting';
 import { products } from '../../inventory';
 
 test('forecasting: calculateForecast calculates reorderPoint, safetyStock, and recommendedOrderQty', () => {
@@ -33,6 +33,28 @@ test('forecasting: calculateForecast handles unknown SKU gracefully', () => {
   assert.equal(fallback.sku, 'NONEXISTENT-SKU-999');
   assert.equal(fallback.currentAvailableStock, 0);
   assert.equal(fallback.stockoutRisk, 'High'); // 0 stock with positive demand is high risk
+});
+
+test('forecasting: trains linear regression from daily sales and falls back on sparse history', () => {
+  const trained = trainDailyDemandModel([1, 2, 3, 4]);
+  assert.equal(trained.model, 'linear-regression');
+  assert.equal(trained.demand, 5);
+  assert.equal(trained.trainingObservations, 4);
+
+  const sparse = trainDailyDemandModel([0, 6, 0]);
+  assert.equal(sparse.model, 'historical-average');
+  assert.equal(sparse.demand, 6);
+});
+
+test('forecasting: applies promotion and seasonal demand context', () => {
+  const forecast = calculateForecast('MILK-001', 10, 3, 10, {
+    promotionMultiplier: 1.5,
+    seasonalMultiplier: 2,
+  });
+
+  assert.equal(forecast.averageDailyDemand, 30);
+  assert.equal(forecast.promotionMultiplier, 1.5);
+  assert.equal(forecast.seasonalMultiplier, 2);
 });
 
 test('forecasting: calculateForecasts generates ranked list for all active products', () => {

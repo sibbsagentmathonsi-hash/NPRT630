@@ -1,4 +1,4 @@
-import { createReceiving, findProductBySku, getLowStockProducts } from '../../inventory';
+import { createReceiving, findProductBySku, getLowStockProducts, type StockMovement } from '../../inventory';
 
 export type Supplier = {
   id: number;
@@ -29,6 +29,7 @@ export type PurchaseOrder = {
 export type PurchaseOrderView = PurchaseOrder & {
   supplierName: string;
   remainingQuantity: number;
+  receivingMovement?: StockMovement;
 };
 
 export const suppliers: Supplier[] = [
@@ -88,6 +89,12 @@ const addDays = (days: number): string => {
 };
 
 export const getPurchaseOrders = (): PurchaseOrderView[] => purchaseOrders.map(toPurchaseOrderView);
+
+export const hydratePurchaseOrders = (storedOrders: PurchaseOrder[]): void => {
+  if (storedOrders.length === 0) return;
+  purchaseOrders.splice(0, purchaseOrders.length, ...storedOrders);
+  purchaseOrderId = Math.max(...storedOrders.map((order) => order.id), 0) + 1;
+};
 
 export const createPurchaseOrder = (
   supplierId: number,
@@ -192,7 +199,13 @@ export const cancelPurchaseOrder = (id: number): PurchaseOrderView => {
   return toPurchaseOrderView(order);
 };
 
-export const receivePurchaseOrder = (id: number, quantity: number, actor = 'Warehouse Staff'): PurchaseOrderView => {
+export const receivePurchaseOrder = (
+  id: number,
+  quantity: number,
+  actor = 'Warehouse Staff',
+  warehouseId?: string,
+  binCode?: string,
+): PurchaseOrderView => {
   assertPositiveInteger(quantity);
 
   const order = purchaseOrders.find((entry) => entry.id === id);
@@ -217,9 +230,17 @@ export const receivePurchaseOrder = (id: number, quantity: number, actor = 'Ware
   order.receivedQuantity += quantity;
   order.status = order.receivedQuantity === order.quantity ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
 
-  createReceiving(product.id, quantity, `Received against purchase order PO-${order.id}`, actor, `PO-${order.id}`);
+  const receipt = createReceiving(
+    product.id,
+    quantity,
+    `Received against purchase order PO-${order.id}`,
+    actor,
+    `PO-${order.id}`,
+    warehouseId,
+    binCode,
+  );
 
-  return toPurchaseOrderView(order);
+  return { ...toPurchaseOrderView(order), receivingMovement: receipt.movement };
 };
 
 export const getSupplierPerformance = () => {

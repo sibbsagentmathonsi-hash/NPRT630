@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateSync } from 'otplib';
 
+process.env.JWT_SECRET ??= 'test-only-jwt-secret-for-auth-tests';
+process.env.NODE_ENV = 'test';
+
 import {
   authenticateUser,
   enrollMfa,
@@ -136,6 +139,7 @@ test('setFirstPassword activates newly registered user', () => {
   assert.equal(update.success, true);
   assert.equal(update.user?.status, 'ACTIVE');
   assert.equal(update.user?.isFirstLogin, false);
+  assert.equal(setFirstPassword(reg.user.employeeId, 'AnotherPassword123!').success, false);
 
   const login = authenticateUser(reg.user.employeeId, 'BrandNewP@ssw0rd2026!');
   assert.ok(login);

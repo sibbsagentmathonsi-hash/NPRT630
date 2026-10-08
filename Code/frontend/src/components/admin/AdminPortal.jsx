@@ -708,16 +708,16 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
         </div>
       )}
 
-      {/* TAB 3: IMMUTABLE AUDIT LOGS (NFR-SEC-01) */}
+      {/* TAB 3: SECURITY AUDIT LOGS */}
       {activeTab === 'audit-logs' && (
         <div className="card" style={{ padding: 0 }}>
           <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <h3 className="card-title">
-                <Icon name="shield-check" size={18} /> Cryptographic Security & Operational Audit Trail
+                <Icon name="shield-check" size={18} /> Security & Operational Audit Log
               </h3>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                Immutable event stream recording all administrative, authentication, and inventory transactions.
+                Application-recorded administrative, authentication, and inventory events. Database-level immutability is not enforced.
               </p>
             </div>
             <button className="btn btn-secondary btn-sm" onClick={fetchAuditLogs}>
@@ -747,7 +747,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                       </span>
                     </td>
                     <td style={{ fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
-                      {new Date(log.timestamp).toLocaleString()}
+                      {new Date(log.timestamp).toLocaleString(undefined, { timeZone: 'UTC' })}
                     </td>
                     <td>
                       <div style={{ fontWeight: 600, fontSize: '0.8125rem' }}>{log.actor}</div>
@@ -807,7 +807,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
               </li>
               <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Transport Security:</strong> TLS 1.3 encryption across all client-server communications.</span>
+                <span><strong>Transport Security:</strong> Configure TLS at a trusted reverse proxy; the API does not terminate TLS itself.</span>
               </li>
             </ul>
           </div>
@@ -827,7 +827,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
               </li>
               <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Negative Inventory Prevention:</strong> ACID transactions reject sales exceeding available stock.</span>
+                <span><strong>Negative Inventory Prevention:</strong> Application validation rejects sales exceeding available stock.</span>
               </li>
               <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Icon name="check-circle" size={16} className="text-success" />
@@ -994,4 +994,3 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
     </div>
   );
 };
-

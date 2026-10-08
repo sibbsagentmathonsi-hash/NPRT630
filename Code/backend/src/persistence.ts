@@ -4,6 +4,8 @@ import {
   CustomerOrderItemModel,
   CustomerOrderModel,
   AuditLogModel,
+  CycleCountModel,
+  InventoryItemModel,
   InventoryReservationModel,
   PurchaseOrderItemModel,
   PurchaseOrderModel,
@@ -16,7 +18,7 @@ import {
 } from './models/DomainModels';
 import { ProductModel } from './models/Product';
 import { StockMovementModel } from './models/StockMovement';
-import type { CustomerOrder, SaleReceipt, StockMovement } from './inventory';
+import { inventoryItems, stockMovements, type CustomerOrder, type CycleCountEntry, type SaleReceipt, type StockMovement } from './inventory';
 import type { PurchaseOrderView } from './modules/procurement/procurement';
 import type { PublicUser, User } from './modules/auth/auth';
 
@@ -25,6 +27,8 @@ let databaseReady = false;
 export const setDatabaseReady = (ready: boolean): void => {
   databaseReady = ready;
 };
+
+export const isDatabaseReady = (): boolean => databaseReady;
 
 const withDatabase = async <T>(operation: (transaction: Transaction) => Promise<T>): Promise<T | undefined> => {
   if (!databaseReady) return undefined;
@@ -62,7 +66,12 @@ const persistMovement = async (movement: StockMovement, transaction: Transaction
       sku: movement.sku,
       type: movement.type,
       quantity: movement.quantity,
-      notes: [movement.notes, movement.actor, movement.reference].filter(Boolean).join(' | '),
+      notes: movement.notes,
+      actor: movement.actor,
+      reference: movement.reference,
+      warehouseId: movement.warehouseId,
+      binLocation: movement.binLocation,
+      createdAt: new Date(movement.timestamp),
     },
     { transaction }
   );
@@ -70,6 +79,17 @@ const persistMovement = async (movement: StockMovement, transaction: Transaction
 
 const persistProductStock = async (productId: number, stock: number, qtyReserved: number, transaction: Transaction): Promise<void> => {
   await ProductModel.update({ stock, qtyReserved }, { where: { id: productId }, transaction });
+};
+
+const persistInventoryItems = async (productIds: number[], transaction: Transaction): Promise<void> => {
+  const productIdSet = new Set(productIds);
+  const records = inventoryItems.filter((item) => productIdSet.has(item.productId));
+  if (records.length === 0) return;
+
+  await InventoryItemModel.bulkCreate(
+    records.map((item) => ({ ...item, updatedAt: new Date(item.updatedAt) })),
+    { updateOnDuplicate: ['qtyOnHand', 'qtyReserved', 'updatedAt'], transaction }
+  );
 };
 
 export const persistSale = async (receipt: SaleReceipt, movements: StockMovement[], products: Array<{ id: number; stock: number; qtyReserved: number }>): Promise<void> => {
@@ -83,6 +103,7 @@ export const persistSale = async (receipt: SaleReceipt, movements: StockMovement
         discountAmount: receipt.discountAmount,
         total: receipt.total,
         paymentMethod: receipt.paymentMethod,
+        paymentReference: receipt.paymentReference,
         tenderAmount: receipt.tenderAmount,
         changeAmount: receipt.changeAmount,
         cashierName: receipt.cashierName,
@@ -105,6 +126,7 @@ export const persistSale = async (receipt: SaleReceipt, movements: StockMovement
     );
     for (const movement of movements) await persistMovement(movement, transaction);
     for (const product of products) await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
+    await persistInventoryItems(receipt.items.map((item) => item.productId), transaction);
   });
 };
 
@@ -124,6 +146,7 @@ export const persistReturn = async (
     await ReturnItemModel.create({ returnId: record.id, productId: product.id, sku: product.sku, quantity, unitPrice: product.price }, { transaction });
     await persistMovement(movement, transaction);
     await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
+    await persistInventoryItems([product.id], transaction);
   });
 };
 
@@ -131,9 +154,50 @@ export const persistReceiving = async (
   product: { id: number; stock: number; qtyReserved: number },
   movement: StockMovement
 ): Promise<void> => {
+  await persistStockMovementAndInventory(product, movement);
+};
+
+export const persistStockAdjustment = async (
+  product: { id: number; stock: number; qtyReserved: number },
+  movement: StockMovement
+): Promise<void> => {
+  await persistStockMovementAndInventory(product, movement);
+};
+
+const persistStockMovementAndInventory = async (
+  product: { id: number; stock: number; qtyReserved: number },
+  movement: StockMovement
+): Promise<void> => {
   await withDatabase(async (transaction) => {
     await persistMovement(movement, transaction);
     await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
+    await persistInventoryItems([product.id], transaction);
+  });
+};
+
+export const persistCycleCount = async (
+  count: CycleCountEntry,
+  products: Array<{ id: number; stock: number; qtyReserved: number }>
+): Promise<void> => {
+  await withDatabase(async (transaction) => {
+    await CycleCountModel.create({
+      auditNumber: count.auditNumber,
+      warehouseId: count.warehouseId,
+      binCode: count.binCode,
+      items: count.items,
+      status: count.status,
+      performedBy: count.performedBy,
+      performedAt: new Date(count.performedAt),
+      managerNotes: count.managerNotes,
+    }, { transaction });
+    for (const movement of stockMovements.filter((entry) => entry.reference === count.auditNumber)) {
+      await persistMovement(movement, transaction);
+    }
+    const productIds = count.items.map((item) => item.productId);
+    for (const product of products.filter((entry) => productIds.includes(entry.id))) {
+      await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
+    }
+    await persistInventoryItems(productIds, transaction);
   });
 };
 
@@ -176,6 +240,7 @@ export const persistProduct = async (product: {
       imageUrl: product.imageUrl,
       isActive: product.isActive,
     }, { transaction });
+    await persistInventoryItems([product.id], transaction);
   });
 };
 
@@ -223,7 +288,7 @@ export const persistAuditLog = async (log: {
   status: string;
 }): Promise<void> => {
   await withDatabase(async (transaction) => {
-    await AuditLogModel.upsert(
+    await AuditLogModel.create(
       {
         id: log.id,
         timestamp: new Date(log.timestamp),
@@ -351,6 +416,7 @@ export const persistCustomerOrder = async (order: CustomerOrder, products: Array
     }
     for (const product of products) await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
     for (const movement of movements) await persistMovement(movement, transaction);
+    await persistInventoryItems(order.items.map((item) => item.productId), transaction);
   });
 };
 
@@ -368,6 +434,7 @@ export const persistCustomerOrderStatus = async (
       { where: { customerOrderId: order.id }, transaction }
     );
     for (const product of products) await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
+    await persistInventoryItems(order.items.map((item) => item.productId), transaction);
   });
 };
 

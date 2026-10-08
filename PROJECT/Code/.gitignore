@@ -1,6 +1,0 @@
-node_modules/
-frontend/dist/
-backend/dist/
-.env
-.DS_Store
-npm-debug.log*

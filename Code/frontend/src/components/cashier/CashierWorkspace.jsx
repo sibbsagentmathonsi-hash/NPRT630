@@ -45,7 +45,10 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const cartTotal = Number((cartSubtotal - discountAmount).toFixed(2));
   const vatAmount = Number(((cartTotal * 15) / 115).toFixed(2)); // 15% South African VAT
   const netSubtotal = Number((cartTotal - vatAmount).toFixed(2));
-  const changeDue = Math.max(0, (Number(tenderAmount) || cartTotal) - cartTotal);
+  const parsedTenderAmount = tenderAmount.trim() === '' ? NaN : Number(tenderAmount);
+  const cashTenderSufficient = Number.isFinite(parsedTenderAmount) && parsedTenderAmount >= cartTotal;
+  const canCompletePayment = paymentMethod !== 'CASH' || cashTenderSufficient;
+  const changeDue = Number.isFinite(parsedTenderAmount) ? Math.max(0, parsedTenderAmount - cartTotal) : 0;
 
   // Add Item to POS Cart
   const handleAddToCart = (product) => {
@@ -113,6 +116,10 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
 
   const handleCompleteCheckout = async () => {
     if (cart.length === 0) return;
+    if (paymentMethod === 'CASH' && !cashTenderSufficient) {
+      onNotify?.(`Cash received must be at least R ${cartTotal.toFixed(2)}`, 'error');
+      return;
+    }
     setProcessingSale(true);
 
     try {
@@ -126,7 +133,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity })),
           paymentMethod,
           discountPercent,
-          tenderAmount: paymentMethod === 'CASH' ? Number(tenderAmount) || cartTotal : cartTotal,
+          tenderAmount: paymentMethod === 'CASH' ? parsedTenderAmount : cartTotal,
           notes: `POS Cashier Transaction (${currentUser?.employeeId || 'STAFF'})`,
         }),
       });
@@ -630,10 +637,17 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                   type="number"
                   className="form-input"
                   placeholder="Enter cash received"
+                  min={cartTotal}
+                  step="0.01"
                   value={tenderAmount}
                   onChange={(e) => setTenderAmount(e.target.value)}
                   autoFocus
                 />
+                {!cashTenderSufficient && (
+                  <div style={{ color: 'var(--danger)', fontSize: '0.8125rem', marginTop: '6px' }}>
+                    Cash received must be at least R {cartTotal.toFixed(2)}.
+                  </div>
+                )}
 
                 {/* Quick preset cash buttons */}
                 <div style={{ display: 'flex', gap: '6px', margin: '8px 0 12px 0' }}>
@@ -664,7 +678,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
               <button
                 className="btn btn-primary"
                 style={{ flex: 2 }}
-                disabled={processingSale}
+                disabled={processingSale || !canCompletePayment}
                 onClick={handleCompleteCheckout}
               >
                 {processingSale ? 'Processing...' : `Confirm & Issue Receipt`}

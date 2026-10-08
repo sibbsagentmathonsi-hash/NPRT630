@@ -1,6 +1,6 @@
-# SyncStock 2.0 — Cloud-Native Inventory & Access Management System
+# SyncStock 2.0 — Inventory & Access Management Prototype
 
-> **A dual-portal, role-isolated inventory governance platform** built with Node.js · Express · TypeScript · React 18 · Vite · PostgreSQL.
+> **A dual-portal inventory operations prototype** built with Node.js · Express · TypeScript · React 18 · Vite · PostgreSQL.
 
 SyncStock 2.0 provides dedicated workspaces for each operational role in a retail/logistics organisation: point-of-sale cashiers, stock-floor managers, warehouse receiving staff, procurement officers, and a completely separate administrative governance console for HR and facility management.
 
@@ -13,17 +13,17 @@ SyncStock 2.0 provides dedicated workspaces for each operational role in a retai
 - [Implemented Scope and Design Status](#implemented-scope-and-design-status)
 - [Project Documents](#project-documents)
 - [Key Highlights](#key-highlights)
-- [System Architecture](#system-architecture)
+- [Current Runtime Architecture](#current-runtime-architecture)
 - [Authentication & Security Flow](#authentication--security-flow)
 - [Role Workspaces](#role-workspaces)
 - [Purchase Order Lifecycle](#purchase-order-lifecycle)
-- [Data Model (ER Diagram)](#data-model-er-diagram)
-- [Role Access Matrix](#role-access-matrix)
+- [Implemented Data Model](#implemented-data-model)
+- [Current API Access Matrix](#current-api-access-matrix)
 - [Feature Deep-Dive](#feature-deep-dive)
 - [Technology Stack](#technology-stack)
 - [Repository Structure](#repository-structure)
 - [Quick Start](#quick-start)
-- [Credentials & Access](#credentials--access)
+- [Demo Access](#demo-access)
 - [API Reference](#api-reference)
 - [Testing & Quality Assurance](#testing--quality-assurance)
 - [Environment Variables](#environment-variables)
@@ -47,12 +47,25 @@ The repository contains both the working application prototype and the academic 
 
 ## Implemented Scope and Design Status
 
-The current application is a functional prototype: a TypeScript Express API organized into domain modules, React/Vite worker and admin portals, and PostgreSQL persistence through Sequelize. The forecasting module uses explainable calculations based on recent sale movements, supplier lead times, and safety-stock rules.
+The current application is a functional prototype: a TypeScript Express API organized into domain modules, React/Vite worker and admin portals, and PostgreSQL persistence through Sequelize. Stock is represented by warehouse/bin inventory items with product-level aggregate totals. On startup, saved products, inventory items, users, sales, stock movements, purchase orders, online orders, and cycle counts are restored from PostgreSQL; production startup refuses to continue if PostgreSQL is unavailable.
 
-The project specifications also describe a broader target architecture, including separately deployed microservices, event-bus communication, external POS/e-commerce/accounting integrations, machine-learning forecasting, and cloud-scale availability targets. Those are design goals, not claims about the current code. This repository does not include an event bus, trained ML model, external-system adapters, or a production cloud deployment.
+Demand forecasting fits a simple linear regression to up to 730 days of daily stock movements, with historical-average and fallback behavior for sparse data. Seasonal and promotion multipliers can be supplied through a forecast-context provider, but no calendar or market-data provider is configured. Card and QR sales require a provider authorization; no payment provider is configured by default, so those methods fail closed. Provider-neutral contracts exist for payment, POS, commerce, accounting, and shipping integrations, but no vendor adapters are active.
+
+The project specifications also describe separately deployed microservices, database-per-service, an API gateway, a distributed message bus/saga, external system integrations, and cloud-scale availability/recovery targets. Those remain target architecture, not claims about this modular application. The repository provides request p95 metrics and readiness checks, but no HA deployment, backup/replication policy, CI/CD, centralized monitoring, or verified SLOs. A single EC2 demo is deployed separately; this repository does not include its production infrastructure automation.
+
+| Area | Implemented | Still target / limitation |
+| :--- | :--- | :--- |
+| Role workflows | Admin, Manager, Cashier, Warehouse, and Procurement portal workflows with route-level authorization | Some actual allowlists differ from the original role matrix; see the access notes below |
+| Inventory | Product catalogue, per-warehouse/bin stock, aggregate availability, movements, reservations, receiving, cycle counts | No transfer workflow or database-enforced foreign keys/locking across service replicas |
+| Persistence | PostgreSQL models, transaction writes, startup hydration for products, bins, users, sales, movements, POs, online orders, and counts | Development/test can fall back to memory; returns and some seed/reference collections are not fully restored |
+| Forecasting | Simple linear regression fitted to up to 730 daily sales buckets, with sparse-history fallback and injectable promotion/seasonality multipliers | No configured promotion calendar, market data, external training pipeline, or validated ML accuracy |
+| Payments and integrations | Provider interfaces; Card/QR and electronic refunds fail closed without provider approval | No active payment, POS, commerce, accounting, or shipping vendor adapter |
+| Architecture | Modular monolith, one Express process and one PostgreSQL database | No deployed microservices, API gateway, broker, distributed saga, or database-per-service |
+| Operations | Health/readiness endpoints, in-memory per-route average/p95/error metrics, production DB fail-fast | No measured SLO, HA, backups/replication, centralized telemetry, CI/CD, Kubernetes, or infrastructure-as-code |
 
 ## Project Documents
 
+- [GitHub repository](https://github.com/sibbsagentmathonsi-hash/NPRT630) contains the project source.
 - [Repository overview](../README.md) summarizes the full project and its published contents.
 - [Problem statement](../Documents/PROJECT%20PROBLEM%20STATEMEN1.docx) covers the SME inventory problem, causes, business impact, and proposed value.
 - [Development plan](../Documents/Inventory%20System%20Development%20Plan.docx) documents user workflows, interface design, usability feedback, data entities, and requirements.
@@ -67,147 +80,92 @@ The project specifications also describe a broader target architecture, includin
 | **Dual-Portal Architecture** | Worker Operations Portal + Admin Governance Console — completely separated HTML entry points and JWT namespaces |
 | **Strict RBAC** | Five distinct roles; Admin is intentionally isolated from operational permission hierarchy |
 | **Real TOTP MFA** | RFC 6238 Time-based OTP via `otplib` — QR URI generation, enrollment, and verification |
-| **PostgreSQL Persistence** | Sequelize ORM; catalogue hydration on startup ensures products survive server restarts |
+| **PostgreSQL Persistence** | Sequelize ORM; multi-bin stock, transaction records, users, orders, and counts hydrate on startup |
+| **Demand Forecasting** | Trained linear regression over daily sales history with injectable promotion/seasonality factors |
+| **Electronic Payments** | Card/QR require full provider authorization; unsupported methods are rejected rather than marked paid |
+| **Operational Readiness** | Health/readiness endpoints and admin-only per-route average/p95 latency metrics |
 | **Automated Test Coverage** | Native Node.js test runner covering inventory, authentication, procurement, forecasting, and API behavior |
 | **Professional Brand Identity** | Dual-variant SVG vector logo (`BrandLogo.jsx`) — inventory cube (worker) / shield crest (admin) |
 | **Dark Mode** | Full light/dark design system via CSS custom properties |
 
 ---
 
-## System Architecture
+## Current Runtime Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Browser["Browser Layer"]
-        WP["Worker Operations Portal\nhttp://localhost:5175\nindex.html"]
-        AP["Admin Governance Portal\nhttp://localhost:5175/admin.html\nadmin.html"]
+    subgraph Browser["Browser"]
+        WP["Worker portal\nindex.html"]
+        AP["Admin portal\nadmin.html"]
     end
-
-    subgraph Frontend["React Frontend (Vite multi-page build)"]
-        WA["WorkerApp.jsx\n(Manager · Cashier · Warehouse · Procurement)"]
-        AA["AdminApp.jsx\n(Employee mgmt · Warehouse CRUD · Audit logs)"]
+    subgraph Frontend["React / Vite"]
+        WA["WorkerApp\nManager · Cashier · Warehouse · Procurement"]
+        AA["AdminApp\nEmployees · Warehouses · Audit"]
     end
-
-    subgraph API["Express REST API — localhost:4000"]
-        MW["Auth Middleware\n(verifyToken · hasPermission)"]
-        AUTH["Auth Routes\n/api/auth/*"]
-        INV["Inventory Routes\n/api/inventory/*"]
-        ADMIN["Admin Routes\n/api/admin/*"]
-        OPS["Operations Routes\n/api/sales · /api/returns\n/api/purchase-orders · /api/forecast\n/api/orders · /api/cycle-counts"]
+    subgraph API["One Express API · port 4000"]
+        AUTH["JWT / role allowlists"]
+        MODULES["In-process modules\nAuth · Inventory · Procurement · Forecasting"]
+        METRICS["Health · readiness · route latency"]
     end
-
-    subgraph Domain["In-Process Domain Modules"]
-        AUTH_M["auth.ts\nusers · JWT · TOTP · OTP"]
-        INV_M["inventory.ts\nproducts · movements · transactions"]
-        PROC_M["procurement.ts\npurchaseOrders · suppliers"]
-        FORE_M["forecasting.ts\ndemand · safety-stock · risk tier"]
+    subgraph DB["One PostgreSQL database"]
+        STOCK["Products + inventory_items + movements"]
+        TRANSACTIONS["Sales · returns · POs · orders · counts · users · audit"]
     end
-
-    subgraph Persistence["Persistence Layer"]
-        SYNC["persistence.ts\nSequelize sync · hydration"]
-        PG[("PostgreSQL 16\ninventory_db")]
-    end
-
+    PORTS["Unconfigured adapter ports\nPayments · POS · Commerce · Accounting · Shipping"]
     WP --> WA
     AP --> AA
-    WA -->|"JWT Bearer token\nsyncstock_worker_token"| API
-    AA -->|"JWT Bearer token\nsyncstock_admin_token"| API
-    API --> MW
-    MW --> AUTH
-    MW --> INV
-    MW --> ADMIN
-    MW --> OPS
-    AUTH --> AUTH_M
-    INV --> INV_M
-    ADMIN --> AUTH_M
-    ADMIN --> INV_M
-    OPS --> INV_M
-    OPS --> PROC_M
-    OPS --> FORE_M
-    AUTH_M --> SYNC
-    INV_M --> SYNC
-    PROC_M --> SYNC
-    SYNC --> PG
+    WA -->|JWT| API
+    AA -->|JWT| API
+    API --> AUTH --> MODULES
+    MODULES --> STOCK
+    MODULES --> TRANSACTIONS
+    MODULES -.-> PORTS
+    API --> METRICS
 ```
 
----
+This is a modular monolith: one Express process, in-process domain modules, and one PostgreSQL database. Redis is included in Compose but unused by application code. There is no API gateway, independent service deployment, database-per-service, message broker, or distributed saga.
 
 ## Authentication & Security Flow
 
 ```mermaid
 sequenceDiagram
-    participant U as User (Browser)
-    participant FE as React App
+    participant U as User
+    participant FE as React portal
     participant API as Express API
-    participant AUTH as auth.ts
+    participant AUTH as Auth module
     participant DB as PostgreSQL
-
-    U->>FE: Enter email / Employee ID + password
+    U->>FE: Enter email/employee ID and password
     FE->>API: POST /api/auth/login
-    API->>AUTH: authenticateUser(identifier, password)
-    AUTH->>AUTH: bcrypt.compare(password, hash)
-    alt First Login
-        AUTH-->>API: { requiresPasswordSetup: true }
-        API-->>FE: 200 { requiresPasswordSetup }
-        FE->>U: Show password-setup wizard
-        U->>FE: New password (entropy-validated)
+    API->>AUTH: authenticateUser(identifier,password)
+    AUTH->>AUTH: bcrypt compare for DB-loaded users
+    alt First login
+           API-->>FE: isFirstLogin
         FE->>API: POST /api/auth/set-first-password
-        API->>AUTH: setFirstPassword(userId, newPassword)
-        AUTH->>DB: persistUser(updatedUser)
     end
-    alt MFA Enrolled
-        AUTH-->>API: { requiresMfa: true, tempToken }
-        API-->>FE: 200 { requiresMfa }
-        FE->>U: Prompt TOTP code
-        U->>FE: 6-digit TOTP
-        FE->>API: POST /api/auth/login (with mfaCode)
-        API->>AUTH: verifyMfa(userId, mfaCode)
-        AUTH->>AUTH: otplib.verifySync({ token, secret })
+    alt MFA enabled
+        FE->>API: Submit 6-digit TOTP
+        API->>AUTH: verifyMfa()
     end
-    AUTH->>AUTH: generateToken(user) — JWT (24h)
-    AUTH->>DB: logSecurityEvent(LOGIN_SUCCESS)
-    AUTH-->>API: { token, user: PublicUser }
-    API-->>FE: 200 { token, user }
-    FE->>FE: Store token in sessionStorage
-    FE->>U: Render role workspace
+    AUTH-->>API: Public user
+    API-->>FE: 8-hour JWT
+    FE->>FE: Store token in localStorage
 ```
 
----
+In development/test memory fallback, seeded passwords are plaintext. Production does not seed demo users; a new production database requires `ADMIN_EMAIL` and `ADMIN_PASSWORD` and forces the configured admin through first-login password setup. Existing databases from earlier versions must have any seeded demo accounts removed or rotated before deployment. First-password setup requires the employee's authenticated first-login token and cannot be reused after activation. Email verification codes are logged by the backend, and audit IP addresses currently use a loopback placeholder. Demo account discovery and unauthenticated quick-switch are disabled in production. CORS allows only the configured `CORS_ORIGINS` list (localhost Vite origins by default outside production); configure the deployed frontend origin explicitly and configure TLS at a trusted reverse proxy. The prototype is not production-ready for real user data.
 
 ## Role Workspaces
 
 ```mermaid
 flowchart LR
-    LOGIN["Login\n/api/auth/login"] --> ROLE{Role?}
-
-    ROLE -->|ADMIN| ADMIN_WS["Admin Governance Portal\nadmin.html"]
-    ROLE -->|MANAGER| MGR_WS["Manager Workspace"]
-    ROLE -->|CASHIER| CSH_WS["Cashier Workspace"]
-    ROLE -->|WAREHOUSE_STAFF| WRH_WS["Warehouse Workspace"]
-    ROLE -->|PROCUREMENT_STAFF| PRC_WS["Procurement Workspace"]
-
-    ADMIN_WS --> A1["Employee Provisioning\n(create · edit · delete)"]
-    ADMIN_WS --> A2["MFA & Password Resets"]
-    ADMIN_WS --> A3["Warehouse CRUD"]
-    ADMIN_WS --> A4["Security Audit Logs\n(immutable)"]
-    ADMIN_WS --> A5["Read-only Oversight\n(products · suppliers · POs · forecasts)"]
-
-    MGR_WS --> M1["KPI Dashboard\n(revenue · margin · turnover)"]
-    MGR_WS --> M2["Procurement Management\n(approve · send · receive POs)"]
-    MGR_WS --> M3["Demand Forecasting\n(reorder points · risk tiers)"]
-    MGR_WS --> M4["Sales & Returns Oversight"]
-
-    CSH_WS --> C1["POS Checkout\n(multi-line · VAT 15% · discount)"]
-    CSH_WS --> C2["Product Returns\n(stock restoration)"]
-
-    WRH_WS --> W1["Stock Receiving\n(match POs · partial receipts)"]
-    WRH_WS --> W2["Cycle Count Audits\n(discrepancy reconciliation)"]
-    WRH_WS --> W3["Online Order Fulfilment\n(reserve · commit · release)"]
-
-    PRC_WS --> P1["Create Purchase Orders"]
-    PRC_WS --> P2["Supplier Management"]
-    PRC_WS --> P3["Low-Stock Auto Alerts"]
+    LOGIN["Login"] --> ROLE{Role}
+    ROLE -->|Admin| ADMIN["Employee and warehouse governance"]
+    ROLE -->|Manager| MANAGER["KPIs · catalogue · forecast · POs"]
+    ROLE -->|Cashier| CASHIER["POS · returns"]
+    ROLE -->|Warehouse| WAREHOUSE["Receiving · counts · fulfillment"]
+    ROLE -->|Procurement| PROCUREMENT["Suppliers · POs · forecasts"]
 ```
+
+The UI separates Admin and worker entry points, but route authorization is defined independently for each API endpoint. See the current API access matrix above; several allowlists intentionally differ from the governance-only target described in the academic specification.
 
 ---
 
@@ -217,10 +175,10 @@ flowchart LR
 stateDiagram-v2
     [*] --> DRAFT: createPurchaseOrder()
 
-    DRAFT --> APPROVED: approvePurchaseOrder()\n[Manager/Admin only]
+    DRAFT --> APPROVED: approvePurchaseOrder()\n[Manager or Procurement]
     DRAFT --> CANCELLED: cancelPurchaseOrder()
 
-    APPROVED --> SENT: sendPurchaseOrder()\n[Notifies supplier]
+    APPROVED --> SENT: sendPurchaseOrder()\n[updates local status; no supplier notification]
     APPROVED --> CANCELLED: cancelPurchaseOrder()
 
     SENT --> PARTIALLY_RECEIVED: receivePurchaseOrder()\n[qty < ordered]
@@ -236,12 +194,16 @@ stateDiagram-v2
 
 ---
 
-## Data Model (ER Diagram)
+## Implemented Data Model
 
 ```mermaid
 erDiagram
+    ROLE {
+        int id PK
+        string name UK
+    }
     USER {
-        string id PK
+        int id PK
         string employeeId UK
         string email UK
         string passwordHash
@@ -250,107 +212,183 @@ erDiagram
         string status
         string mfaSecret
         boolean mfaEnabled
-        boolean requiresPasswordSetup
+        boolean isFirstLogin
+        boolean emailVerified
         datetime createdAt
     }
     PRODUCT {
-        string id PK
+        int id PK
         string sku UK
+        string barcode
         string name
-        string categoryId FK
-        number costPrice
-        number retailPrice
-        number currentStock
-        number reservedStock
+        string category
+        int supplierId
+        int stock
+        int qtyReserved
         number reorderPoint
+        int reorderQuantity
+        number unitCost
+        number price
         string warehouseId FK
-        datetime createdAt
+        string binLocation
+        boolean isActive
     }
-    CATEGORY {
+    INVENTORY_ITEM {
         string id PK
-        string name
-        string description
+        int productId
+        string warehouseId
+        string binCode
+        int qtyOnHand
+        int qtyReserved
+        datetime updatedAt
     }
     WAREHOUSE {
         string id PK
         string name
-        string location
-        string type
+        string city
+        int binsCount
+        int activeSkus
+        int capacityPct
         string status
-        number capacity
     }
     SUPPLIER {
-        string id PK
+        int id PK
         string name
-        string contactEmail
-        number performanceRating
-        number onTimeDeliveryRate
+        string contact
+        int leadTimeDays
+        number rating
     }
     PURCHASE_ORDER {
-        string id PK
-        string sku FK
-        string supplierId FK
-        number quantity
-        number receivedQuantity
-        number unitCost
+        int id PK
+        int supplierId
         string status
-        datetime orderedAt
+        int totalQuantity
+        int receivedQuantity
         datetime approvedAt
-        datetime receivedAt
+        datetime sentAt
+    }
+    PURCHASE_ORDER_ITEM {
+        int id PK
+        int purchaseOrderId
+        string sku
+        string itemName
+        int quantity
+        int receivedQuantity
     }
     STOCK_MOVEMENT {
-        string id PK
-        string productId FK
+        int id PK
+        int productId
+        string sku
         string type
         number quantity
-        number balanceAfter
         string reference
-        string performedBy
+        string actor
+        string warehouseId
+        string binLocation
         datetime createdAt
     }
     SALE {
-        string id PK
-        string cashierId FK
+        int id PK
+        string receiptNumber UK
         number subtotal
-        number taxAmount
+        number vatAmount
         number discountAmount
-        number totalAmount
+        number total
         string paymentMethod
+        string paymentReference
+        number tenderAmount
+        number changeAmount
         datetime createdAt
     }
     SALE_ITEM {
-        string id PK
-        string saleId FK
-        string sku FK
-        number quantity
+        int id PK
+        int saleId
+        int productId
+        string sku
+        int quantity
         number unitPrice
         number lineTotal
     }
-    AUDIT_LOG {
-        string id PK
-        string userId FK
-        string eventType
-        string severity
-        string description
-        string ipAddress
+    RETURN {
+        int id PK
+        string returnNumber UK
+        string receiptNumber
+        number refundAmount
+        string reason
+        string actor
         datetime createdAt
     }
+    RETURN_ITEM {
+        int id PK
+        int returnId
+        int productId
+        string sku
+        int quantity
+        number unitPrice
+    }
+    CUSTOMER_ORDER {
+        int id PK
+        string orderNumber UK
+        string customerName
+        string status
+        number total
+        string trackingNumber
+        datetime createdAt
+    }
+    CUSTOMER_ORDER_ITEM {
+        int id PK
+        int customerOrderId
+        int productId
+        string sku
+        int quantity
+        number unitPrice
+        number lineTotal
+    }
+    INVENTORY_RESERVATION {
+        int id PK
+        int customerOrderId
+        int productId
+        int quantity
+        string status
+    }
+    CYCLE_COUNT {
+        int id PK
+        string auditNumber UK
+        string warehouseId
+        string binCode
+        jsonb items
+        string status
+        string performedBy
+        datetime performedAt
+    }
+    AUDIT_LOG {
+        string id PK
+        string actor
+        string actorRole
+        string eventType
+        string targetUserId
+        string details
+        string ipAddress
+        datetime timestamp
+    }
 
-    USER ||--o{ STOCK_MOVEMENT : "performs"
-    USER ||--o{ SALE : "processes"
-    USER ||--o{ AUDIT_LOG : "generates"
-    PRODUCT }o--|| CATEGORY : "belongs to"
-    PRODUCT }o--|| WAREHOUSE : "stored in"
-    PRODUCT ||--o{ STOCK_MOVEMENT : "tracks"
+    ROLE ||--o{ USER : "assigned to"
+    PRODUCT ||--o{ INVENTORY_ITEM : "stock by location"
+    PRODUCT ||--o{ STOCK_MOVEMENT : "changes through"
     PRODUCT ||--o{ SALE_ITEM : "sold as"
-    SUPPLIER ||--o{ PURCHASE_ORDER : "fulfils"
-    PURCHASE_ORDER }o--|| PRODUCT : "orders"
+    SUPPLIER ||--o{ PURCHASE_ORDER : "supplies"
+    PURCHASE_ORDER ||--|{ PURCHASE_ORDER_ITEM : "contains"
     SALE ||--|{ SALE_ITEM : "contains"
+    RETURN ||--|{ RETURN_ITEM : "contains"
+    CUSTOMER_ORDER ||--|{ CUSTOMER_ORDER_ITEM : "contains"
+    CUSTOMER_ORDER ||--o{ INVENTORY_RESERVATION : "reserves"
 ```
+
+`products.stock` and `products.qtyReserved` are aggregate compatibility fields; per-location quantities live in `inventory_items`. The Sequelize models do not declare every logical relation above as a database foreign key. `cycle_counts.items` is stored as JSONB, and audit logs are insert-only through the application (not protected from direct database edits by a trigger).
 
 ---
 
-## Role Access Matrix
+## Current API Access Matrix
 
 | Capability | Admin | Manager | Cashier | Warehouse | Procurement |
 | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -359,18 +397,20 @@ erDiagram
 | Warehouse CRUD | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Security audit log access | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Product catalogue read | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Create/edit products | ✅ | ✅ | ❌ | ❌ | ✅ |
 | POS checkout | ❌ | ✅ | ✅ | ❌ | ❌ |
 | Product returns | ❌ | ✅ | ✅ | ❌ | ❌ |
-| Approve purchase orders | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Create purchase orders | ❌ | ✅ | ❌ | ❌ | ✅ |
-| Stock receiving (warehouse) | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Cycle count audits | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Online order reservation | ❌ | ✅ | ❌ | ✅ | ❌ |
-| Demand forecasting view | ❌ | ✅ | ❌ | ❌ | ✅ |
+| Approve/send/cancel purchase orders | ❌ | ✅ | ❌ | ❌ | ✅ |
+| Stock receiving | ❌ | ✅ | ❌ | ✅ | ❌ |
+| Cycle count audits | ❌ | ✅ | ❌ | ✅ | ❌ |
+| Online order reservation | ❌ | ✅ | ✅ | ❌ | ❌ |
+| Commit/release online orders | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Demand forecasting view | ✅ | ✅ | ❌ | ❌ | ✅ |
 | KPI dashboard | ❌ | ✅ | ❌ | ❌ | ❌ |
 
 > [!NOTE]
-> Admin is intentionally isolated from the operational permission hierarchy. `hasPermission('ADMIN', 'MANAGER')` returns `false` by design — Admin governs people and facilities, not merchandise transactions.
+> This table reflects the route allowlists in `server.ts`, not the original target policy. In particular, Admin can create/edit products, Procurement can approve/send/cancel purchase orders, and Managers can receive stock and submit cycle counts. Review these permissions before production use.
 
 ---
 
@@ -383,7 +423,7 @@ erDiagram
 | **Barcode / SKU scanner** | Input field accepts physical scanner output or manual entry; matches by barcode string or SKU (case-insensitive) and adds item to cart instantly |
 | **Live stock guard** | Adding or incrementing an item beyond its available stock triggers a real-time error — the cart cannot exceed what is physically on hand |
 | **Tender & change calculation** | Cash tender amount input; change-due auto-calculated and displayed before checkout confirmation |
-| **Multi-payment methods** | Cash, Card, and Mobile Money — selected at checkout modal |
+| **Payment methods** | Cash is validated against the total; Card/QR are accepted only when a configured provider authorizes the full amount (no provider is configured by default) |
 | **South African VAT (15%)** | VAT is extracted from the inclusive price using the formula `total × 15 / 115`, not added on top — correct for SA tax law |
 | **Percentage discount** | Discount slider/input applied before VAT extraction; supports 0–100% |
 | **Printed receipt** | On successful sale, a formatted receipt is generated in-app with receipt number, line items, VAT breakdown, payment method, cashier ID, and timestamp |
@@ -401,10 +441,10 @@ erDiagram
 | **KPI Dashboard** | Live tiles: daily sales revenue, stock-on-hand count, available vs reserved units, inventory cost value, inventory retail value, gross margin %, low-stock count |
 | **Product catalogue management** | Managers can create new products and edit existing ones via a full product form (SKU, barcode, name, category, supplier, cost price, retail price, reorder point, reorder quantity, warehouse, bin location, image URL) |
 | **Catalogue search & filter** | Full-text search by product name, SKU, or barcode; combined with category tab filter |
-| **One-click replenishment PO** | From the forecasting view, each high-risk SKU has a "Create PO" button that auto-fills supplier, SKU, and EOQ-calculated quantity into a draft purchase order |
+| **One-click replenishment PO** | From the forecasting view, a high-risk SKU can prefill a draft PO using the supplier, current stock, and configured reorder quantity; this is not an EOQ model |
 | **Bulk low-stock PO generation** | Single button generates draft purchase orders for all SKUs currently below reorder point — skips any SKU that already has an open draft PO |
 | **Supplier performance ratings** | Supplier list shows on-time delivery rate and quality score alongside contact details |
-| **Purchase order approval flow** | Manager can approve (DRAFT → APPROVED) and send (APPROVED → SENT) purchase orders from within the workspace |
+| **Purchase order approval flow** | Manager and Procurement API roles can approve (DRAFT → APPROVED), send (APPROVED → SENT), or cancel open orders |
 | **Forecasting sub-tabs** | Workspace has four tabs: Overview (KPIs), Forecasting (risk table), Suppliers, and Catalogue |
 
 ---
@@ -413,11 +453,11 @@ erDiagram
 
 | Feature | Detail |
 | :--- | :--- |
-| **Goods receiving** | Operator selects an open purchase order, enters received quantity and condition (GOOD / DAMAGED / PARTIAL), then submits — stock is incremented and a movement record is created |
+| **Goods receiving** | Operator selects an open purchase order and enters quantity and destination warehouse/bin — stock is incremented and a movement is created. Condition and notes controls are currently not sent to the API |
 | **Partial receipt support** | If received quantity is less than ordered, PO status moves to PARTIALLY_RECEIVED; remaining quantity is tracked for follow-up receipts |
-| **Cycle count auditing** | Warehouse/bin selector; auditor steps through each product with +/− quantity steppers; on submit, system reconciles differences between system quantity and counted quantity and writes an immutable audit record with a unique audit number |
-| **Stock adjustment** | Manual ADD or REMOVE quantity with reason code (Supplier Stock Received, Damaged Write-off, Cycle Count Correction, Transfer, Other) — writes a stock movement entry |
-| **Online order fulfilment** | Picker selects a reserved order, commits it (RESERVED → COMMITTED) which deducts from physical stock, or releases it back to available if the order is cancelled |
+| **Cycle count auditing** | Warehouse/bin selector; auditor steps through each product with +/− quantity steppers; submission reconciles only the selected bin and stores a cycle-count record plus stock movement |
+| **Stock adjustment** | ADD/DEDUCT writes an audited adjustment to the product's primary warehouse/bin. Deductions are rejected if they exceed unreserved stock. Inter-warehouse transfers are not implemented; use the PO receiving workflow for supplier receipts |
+| **Online order fulfilment** | Picker commits a reservation, which deducts physical stock and marks the order `PAID`, or releases it back to available if cancelled |
 | **Mobile scanner simulation mode** | Toggle switches the UI into a compact, touch-friendly scanner simulation layout suited for handheld devices |
 | **Four workspace tabs** | Receiving, Cycle Count, Stock Adjustments, Order Fulfilment |
 
@@ -430,12 +470,12 @@ erDiagram
 | **Employee registration modal** | Full form: name, email, sector (Store Management / Cashier & Front-of-House / Warehouse & Logistics / Procurement & Supply Chain / System Administration), role, temporary password |
 | **Employee search & sector filter** | Search by name/email combined with sector dropdown filter |
 | **Inline employee edit** | Click Edit on any employee row to update their name, email, sector, role, or status in-place |
-| **Force password reset** | One-click button sets the employee's `requiresPasswordSetup` flag — they will be prompted to change password on next login |
+| **Force password reset** | One-click action sets `isFirstLogin` and a temporary password — the employee must set a new password on next login |
 | **MFA revocation** | Admin can revoke an employee's TOTP secret; they can re-enroll on next login |
-| **Account deactivation** | Delete action soft-deactivates the account (status → INACTIVE) rather than hard-deleting — preserves audit trail |
-| **Security audit log** | Immutable, append-only log of all security events: LOGIN_SUCCESS, LOGIN_FAILED, PASSWORD_CHANGED, MFA_ENROLLED, MFA_VERIFIED, EMPLOYEE_REGISTERED, EMPLOYEE_DEACTIVATED. Displays event type, severity badge, actor, description, IP address, and timestamp |
+| **Account removal** | The delete action removes the employee row from the database; it is not a soft-delete. Use status changes when an account should be retained |
+| **Security audit log** | Security events are inserted into PostgreSQL and displayed with actor, description, status, and timestamp. The application writes insert-only; the database has no trigger preventing direct SQL updates/deletes, and the recorded IP is currently a loopback placeholder |
 | **Warehouse facility management** | Create, edit, and delete warehouse records with ID, name, city, bin count, active SKUs, capacity %, supervisor assignment, and operational status (OPERATIONAL / STANDBY / MAINTENANCE) |
-| **Read-only operational oversight** | Admin can view products, suppliers, and purchase orders without the ability to modify them — governance without operational interference |
+| **Operational oversight** | Admin can view products, suppliers, purchase orders, and forecasts. Current API allowlists also permit Admin product create/update; see the access matrix caveat |
 | **Policies tab** | Displays the system's access control and security policies in human-readable format |
 | **Session expiry detection** | On any 401 response, the portal auto-clears the session and returns to the login screen |
 
@@ -446,17 +486,19 @@ erDiagram
 | Feature | Detail |
 | :--- | :--- |
 | **Dual-identifier login** | Accepts email address, Employee ID (`EMP-XXX-NNN`), or generic `identifier` field — any format works |
-| **First-login password wizard** | New accounts have `requiresPasswordSetup: true`; a multi-step wizard enforces entropy rules before granting access |
+| **First-login password wizard** | New accounts use the `isFirstLogin` flag; a multi-step wizard enforces password-strength rules before granting access |
 | **Password strength rules** | Minimum 8 characters, at least one uppercase, one lowercase, one digit, one symbol — validated client and server side |
-| **Email OTP verification** | 6-digit code sent via SMTP for email address confirmation; 10-minute expiry |
+| **Email OTP verification** | A 6-digit code can be sent through optional SMTP and expires after 10 minutes. Codes are also written to backend logs; outstanding verification codes are held in process memory |
 | **TOTP MFA enrollment** | On enrollment, server generates a random secret, returns a QR-compatible URI (`otpauth://`), and the user scans it with any authenticator app |
 | **TOTP verification** | Every login with MFA enrolled requires a valid 6-digit TOTP code (30-second window, RFC 6238) verified server-side with `otplib` |
-| **JWT session tokens** | 24-hour expiry; signed with `JWT_SECRET`; includes user ID, role, employeeId, name |
+| **JWT session tokens** | 8-hour expiry; signed with `JWT_SECRET`; includes user ID, role, employeeId, name; browser tokens are stored in `localStorage` |
 | **Separate JWT namespaces** | Worker portal stores token in `syncstock_worker_token`; Admin portal in `syncstock_admin_token` — cross-portal token reuse is rejected |
 
 ---
 
 
+
+## Technology Stack
 
 | Layer | Technology | Version |
 | :--- | :--- | :--- |
@@ -468,6 +510,7 @@ erDiagram
 | **Backend Language** | TypeScript | 5 |
 | **Database** | PostgreSQL | 16 |
 | **ORM** | Sequelize | 6 |
+| **Regression model** | `ml-regression` | 6 |
 | **Authentication** | JWT (`jsonwebtoken`) | — |
 | **Password Hashing** | bcryptjs | — |
 | **TOTP MFA** | otplib | — |
@@ -482,25 +525,18 @@ erDiagram
 .
 ├── backend/
 │   ├── src/
-│   │   ├── config/
-│   │   │   └── database.ts          # Sequelize connection setup
-│   │   ├── models/
-│   │   │   └── DomainModels.ts      # Sequelize model definitions
+│   │   ├── config/                  # Sequelize and PostgreSQL startup/hydration
+│   │   ├── models/                  # Product, stock movement, domain ORM models
 │   │   ├── modules/
-│   │   │   ├── auth/
-│   │   │   │   ├── auth.ts          # Users, JWT, TOTP, OTP, RBAC
-│   │   │   │   └── auth.test.ts     # 11 auth & security tests
-│   │   │   ├── forecasting/
-│   │   │   │   ├── forecasting.ts   # Demand calc, safety stock, risk tiers
-│   │   │   │   └── forecasting.test.ts  # 4 forecasting tests
-│   │   │   └── procurement/
-│   │   │       ├── procurement.ts   # Purchase order lifecycle, supplier ratings
-│   │   │       └── procurement.test.ts  # 10 procurement tests
-│   │   ├── inventory.ts             # In-memory catalogue, transactions, returns
-│   │   ├── persistence.ts           # PostgreSQL sync & catalogue hydration
-│   │   ├── server.ts                # Express REST API (938 lines)
-│   │   ├── inventory.test.ts        # 23 inventory core tests
-│   │   └── server.test.ts           # 12 REST API integration tests
+│   │   │   ├── auth/                # Users, JWT, TOTP, email OTP, RBAC
+│   │   │   ├── forecasting/         # Regression model and reorder calculations
+│   │   │   ├── integrations/        # Provider-neutral payment/external-system ports
+│   │   │   └── procurement/         # POs, receiving state, supplier ratings
+│   │   ├── inventory.ts             # Stock, bins, sales, returns, orders, counts
+│   │   ├── observability.ts         # In-memory per-route latency/error metrics
+│   │   ├── persistence.ts           # PostgreSQL writes and transactions
+│   │   ├── server.ts                # Express REST API
+│   │   └── *.test.ts                # Domain, integration-port, and metrics tests
 │   ├── .env.example
 │   ├── package.json
 │   └── tsconfig.json
@@ -522,7 +558,7 @@ erDiagram
 │   ├── package.json
 │   └── vite.config.js
 ├── docker-compose.yml
-├── package.json                     # Workspace orchestration (dev, build, test)
+├── package.json                     # Workspace orchestration (dev and build)
 └── README.md
 ```
 
@@ -553,6 +589,8 @@ Copy the example file and fill in your database credentials:
 Copy-Item backend\.env.example backend\.env
 ```
 
+For the included local Compose database, set `DB_HOST=localhost`, `DB_PORT=5432`, `DB_USER=postgres`, `DB_PASSWORD=postgres`, and `DB_NAME=inventory_db`. Replace the placeholder `JWT_SECRET` with a long random value. The Compose password is for local development only. The Redis container is currently unused by the application.
+
 ### 4. Start Development Servers
 
 ```powershell
@@ -573,19 +611,14 @@ Both the backend API and the Vite dev server start concurrently:
 
 ---
 
-## Credentials & Access
+## Demo Access
 
 ### System Administrator
 
 > [!CAUTION]
-> Admin credentials are **not** stored in this repository. Configure them via `backend/.env` before first run.
+> Non-production builds include a demo administrator (`EMP-ADM-001`) in `backend/src/modules/auth/auth.ts`. Production does not seed demo users: for a new production database, set `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` before first start; the first login requires choosing a new password. The admin bootstrap settings are only used when the production database has no users.
 
-| Field | Value |
-| :--- | :--- |
-| Email | *(set via `ADMIN_EMAIL` in `backend/.env`)* |
-| Employee ID | `EMP-ADM-001` |
-| Password | *(set via `ADMIN_PASSWORD` in `backend/.env`)* |
-| Portal | `http://localhost:5175/admin.html` |
+Admin portal: `http://localhost:5175/admin.html`.
 
 The Administrator can create all other staff accounts (Managers, Cashiers, Warehouse Staff, Procurement Officers) directly within the Admin Portal. Each account receives a sector-prefixed Employee ID automatically:
 
@@ -601,81 +634,81 @@ The Administrator can create all other staff accounts (Managers, Cashiers, Wareh
 
 ## API Reference
 
-### Authentication
+All routes are served by the Express API on port `4000`. Authorization is enforced by route allowlists; there is no generated OpenAPI specification.
+
+### Health and Metrics
 
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/health` | None | Service health status |
-| `GET` | `/api/auth/demo-accounts` | None | List seeded demo accounts |
-| `POST` | `/api/auth/login` | None | Authenticate — accepts `email`, `employeeId`, or `identifier` |
-| `POST` | `/api/auth/set-first-password` | None | Complete first-time password setup |
+| `GET` | `/api/health` | None | Liveness status and process uptime |
+| `GET` | `/api/health/ready` | None | Readiness and storage mode; production requires PostgreSQL |
+| `GET` | `/api/admin/metrics` | Admin | Per-route counts, errors, average latency, p95 latency (in-memory sample window) |
 
-### Inventory
-
-| Method | Endpoint | Auth | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/inventory/workspace` | Any role | Role-scoped product catalogue |
-
-### Sales & Returns
+### Authentication and Administration
 
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/sales` | Manager, Cashier | Process POS checkout (VAT 15%, discount) |
-| `POST` | `/api/returns` | Manager, Cashier | Process product return & restore stock |
-
-### Purchase Orders
-
-| Method | Endpoint | Auth | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/purchase-orders` | Manager, Procurement | List all purchase orders |
-| `POST` | `/api/purchase-orders` | Manager, Procurement | Create new purchase order |
-| `PATCH` | `/api/purchase-orders/:id/approve` | Manager | Approve DRAFT order |
-| `PATCH` | `/api/purchase-orders/:id/send` | Manager | Mark order as sent to supplier |
-| `PATCH` | `/api/purchase-orders/:id/cancel` | Manager | Cancel order |
-| `PATCH` | `/api/purchase-orders/:id/receive` | Warehouse | Record stock receipt |
-
-### Forecasting & Suppliers
-
-| Method | Endpoint | Auth | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/forecast` | Manager, Procurement | Demand forecasts ranked by risk |
-| `GET` | `/api/forecast/:sku` | Manager, Procurement | Single-SKU forecast detail |
-| `GET` | `/api/suppliers` | Manager, Procurement | Supplier list with performance ratings |
-
-### Online Orders
-
-| Method | Endpoint | Auth | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/orders` | Manager, Warehouse | List online orders |
-| `POST` | `/api/orders/reserve` | Manager | Reserve stock for order |
-| `PATCH` | `/api/orders/:id/commit` | Warehouse | Commit reserved order |
-| `PATCH` | `/api/orders/:id/release` | Manager | Release reservation |
-
-### Cycle Counts
-
-| Method | Endpoint | Auth | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/cycle-counts` | Warehouse, Manager | List cycle count sessions |
-| `POST` | `/api/cycle-counts` | Warehouse | Submit new count (discrepancy reconciliation) |
-
-### Admin (ADMIN role only)
-
-| Method | Endpoint | Auth | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/admin/employees` | Admin | List all employees |
-| `PATCH` | `/api/admin/employees/:id` | Admin | Update employee details |
-| `DELETE` | `/api/admin/employees/:id` | Admin | Deactivate employee account |
-| `POST` | `/api/admin/employees/:id/reset-password` | Admin | Force password reset |
-| `POST` | `/api/admin/employees/:id/reset-mfa` | Admin | Revoke MFA secret |
-| `GET` | `/api/admin/audit-logs` | Admin | Security audit log (immutable) |
-| `GET` | `/api/admin/warehouses` | Admin | List warehouse facilities |
+| `GET` | `/api/auth/demo-accounts` | None, non-production only | List seeded demo accounts; returns 404 in production |
+| `POST` | `/api/auth/login` | None | Authenticate by email, employee ID, or identifier |
+| `POST` | `/api/auth/set-first-password` | Authenticated first-login session | Set a first password once for the matching employee |
+| `POST` | `/api/auth/mfa/enroll` | Authenticated staff | Create TOTP enrollment URI |
+| `POST` | `/api/auth/verify-mfa` | None | Verify a TOTP code |
+| `POST` | `/api/auth/quick-switch` | None, non-production only | Demo account switch; returns 404 in production |
+| `POST` | `/api/auth/send-verification-code` | None | Send/simulate email verification code |
+| `POST` | `/api/auth/verify-email-code` | None | Verify email code |
+| `POST` | `/api/admin/employees` | Admin | Register employee |
+| `GET` | `/api/admin/employees` | Admin | List employees |
+| `PATCH` | `/api/admin/employees/:id` | Admin | Update employee role, sector, or status |
+| `DELETE` | `/api/admin/employees/:id` | Admin | Remove employee |
+| `POST` | `/api/admin/employees/:id/reset-password` | Admin | Force password setup |
+| `POST` | `/api/admin/employees/:id/reset-mfa` | Admin | Reset MFA enrollment |
+| `GET` | `/api/admin/audit-logs` | Admin | Read security events |
+| `GET` | `/api/admin/warehouses` | Admin | List warehouses |
 | `POST` | `/api/admin/warehouses` | Admin | Create warehouse |
 | `PATCH` | `/api/admin/warehouses/:id` | Admin | Update warehouse |
-| `DELETE` | `/api/admin/warehouses/:id` | Admin | Remove warehouse |
-| `GET` | `/api/admin/products` | Admin | Read-only product oversight |
-| `GET` | `/api/admin/suppliers` | Admin | Read-only supplier oversight |
-| `GET` | `/api/admin/purchase-orders` | Admin | Read-only procurement oversight |
-| `GET` | `/api/admin/forecast` | Admin | Read-only demand forecasts |
+| `DELETE` | `/api/admin/warehouses/:id` | Admin | Delete warehouse |
+
+### Inventory, Sales, and Receiving
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/products` | All roles | List products |
+| `POST` | `/api/products` | Admin, Manager, Procurement | Create product |
+| `PATCH` | `/api/products/:id` | Admin, Manager, Procurement | Update product |
+| `GET` | `/api/products/low-stock` | Manager, Warehouse | List low-stock products |
+| `GET` | `/api/stock-movements` | Manager, Cashier, Warehouse | List stock movements |
+| `GET` | `/api/dashboard/summary` | Manager | Read operational KPIs |
+| `GET` | `/api/inventory/workspace` | Manager, Cashier, Warehouse, Procurement | Role-scoped workspace data |
+| `GET` | `/api/inventory/items?productId=:id` | Admin, Manager, Warehouse, Procurement | Read stock by warehouse/bin |
+| `POST` | `/api/inventory/adjustments` | Manager, Warehouse | Add/deduct stock at the product's primary bin; prevents deductions below reserved quantity |
+| `POST` | `/api/sales` | Manager, Cashier | Checkout; cash must cover total, Card/QR require provider authorization |
+| `GET` | `/api/sales/receipts` | Manager, Cashier | List receipts |
+| `POST` | `/api/returns` | Manager, Cashier | Process return; electronic receipts require provider refund |
+| `POST` | `/api/receiving` | Manager, Warehouse | Receive stock into a warehouse/bin |
+| `GET` | `/api/cycle-counts` | Manager, Warehouse | List cycle counts |
+| `POST` | `/api/cycle-counts` | Manager, Warehouse | Reconcile a warehouse/bin count |
+
+### Procurement, Forecasting, and Online Orders
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/suppliers` | Admin, Manager, Warehouse, Procurement | List suppliers |
+| `GET` | `/api/supplier-performance` | Admin, Manager, Procurement | Supplier metrics |
+| `GET` | `/api/purchase-orders` | Admin, Manager, Warehouse, Procurement | List purchase orders |
+| `POST` | `/api/purchase-orders` | Manager, Procurement | Create purchase order |
+| `POST` | `/api/purchase-orders/generate-low-stock` | Manager, Procurement | Generate draft low-stock orders |
+| `PATCH` | `/api/purchase-orders/:id/approve` | Manager, Procurement | Approve a draft order |
+| `PATCH` | `/api/purchase-orders/:id/send` | Manager, Procurement | Mark an order sent |
+| `PATCH` | `/api/purchase-orders/:id/cancel` | Manager, Procurement | Cancel an open order |
+| `PATCH` | `/api/purchase-orders/:id/receive` | Manager, Warehouse | Receive into a selected bin |
+| `GET` | `/api/forecast` | Admin, Manager, Procurement | List demand forecasts |
+| `GET` | `/api/forecast/:sku` | Admin, Manager, Procurement | Forecast a SKU |
+| `GET` | `/api/orders` | Manager, Cashier, Warehouse | List online orders |
+| `POST` | `/api/orders/reserve` | Manager, Cashier | Reserve order stock |
+| `PATCH` | `/api/orders/:id/commit` | Manager, Cashier, Warehouse | Commit reservation |
+| `PATCH` | `/api/orders/:id/release` | Manager, Cashier, Warehouse | Release reservation |
+
+These are the implemented routes; there are no separate `/api/admin/products`, `/api/admin/suppliers`, `/api/admin/purchase-orders`, or `/api/admin/forecast` aliases. Admin uses the shared endpoints where authorized. Demo account discovery and the unauthenticated `quick-switch` route are available only outside production; neither can issue or disclose demo sessions in production.
 
 ---
 
@@ -684,7 +717,7 @@ The Administrator can create all other staff accounts (Managers, Cashiers, Wareh
 Run the complete automated test suite:
 
 ```powershell
-npm.cmd test --workspace backend
+npm.cmd run test --workspace backend
 ```
 
 ### Test Suite Summary
@@ -693,12 +726,13 @@ npm.cmd test --workspace backend
 | :--- | :--- | :--- |
 | **Inventory Core** | `inventory.test.ts` | Sales (VAT, discount), returns, stock receiving, cycle counts, reservations, valuation metrics, low-stock detection, dashboard KPIs |
 | **Procurement** | `procurement.test.ts` | PO creation, approval, dispatch, partial and full receiving, cancellation, low-stock PO generation, supplier ratings |
-| **Forecasting** | `forecasting.test.ts` | Average daily demand, safety stock, reorder point, and stockout risk tiers |
+| **Forecasting** | `forecasting.test.ts` | Regression training, sparse-history fallback, promotion/seasonality factors, reorder point, and stockout risk |
 | **Auth & Security** | `auth.test.ts` | Password policy, employee IDs, JWT verification, role permissions, TOTP MFA, and email OTP |
-| **API Integration** | `server.test.ts` | Health checks, login, authorization middleware, admin endpoints, sales, returns, procurement, and forecasting |
+| **Provider contracts** | `integrations.test.ts` | Default-deny payment authorization/refunds and full-amount validation |
+| **Observability** | `observability.test.ts` | Per-route request/error counts and average/p95 calculation |
 
 > [!IMPORTANT]
-> Tests run against an **in-memory** store — no live database connection required. The server binds to an ephemeral port during integration tests (set via `NODE_ENV=test`) to avoid conflicting with a running instance.
+> The automated tests run with `NODE_ENV=test` and do not connect to PostgreSQL. `backend/src/server.test.ts` is currently empty, so API route and database migration behavior are not covered by a committed integration suite. The frontend has no test or lint script; use the root build to verify its bundle.
 
 ---
 
@@ -713,15 +747,23 @@ Configure `backend/.env` (copy from `backend/.env.example`):
 | `DB_HOST` | `localhost` | PostgreSQL host |
 | `DB_PORT` | `5432` | PostgreSQL port |
 | `DB_USER` | `postgres` | Database user |
-| `DB_PASSWORD` | *(set in `.env`)* | Database password |
+| `DB_PASSWORD` | *(required)* | Database password |
 | `DB_NAME` | `inventory_db` | PostgreSQL schema / database name |
-| `JWT_SECRET` | `dev-secret-key` | HMAC-SHA256 signing key for session tokens |
+| `JWT_SECRET` | *(required)* | HMAC-SHA256 signing key for session tokens |
+| `CORS_ORIGINS` | Local Vite origins in the example; empty if unset in production | Comma-separated browser origins allowed to call the API; set the deployed frontend origin in production |
+| `ADMIN_NAME` | `System Administrator` | Optional display name for first production admin bootstrap |
+| `ADMIN_EMAIL` | *(required for a new production database)* | Email for the initial production administrator |
+| `ADMIN_PASSWORD` | *(required for a new production database)* | Strong one-time password for initial administrator setup |
 | `SMTP_HOST` | *(optional)* | SMTP relay for email OTP delivery |
+| `SMTP_PORT` | `587` | SMTP relay port |
+| `SMTP_SECURE` | `false` | Use TLS for SMTP connection |
 | `SMTP_USER` | *(optional)* | SMTP username |
 | `SMTP_PASSWORD` | *(optional)* | SMTP password |
+| `SMTP_FROM` | `SMTP_USER` | Sender address for verification email |
 
 > [!CAUTION]
 > Never commit `backend/.env` to version control. It is listed in `.gitignore`. Use `backend/.env.example` as the template — it contains only placeholder values.
+> The backend will not start without `DB_PASSWORD` and `JWT_SECRET`; provide unique values through `backend/.env` or the deployment environment. A new production database also requires `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Set `CORS_ORIGINS` to the exact frontend origin(s) in production.
 
 ---
 
@@ -736,6 +778,8 @@ npm.cmd run build
 Outputs:
 - `backend/dist/` — CommonJS bundle (Node.js)
 - `frontend/dist/` — Vite multi-page bundle (`index.html` + `admin.html`, chunked JS/CSS)
+
+Start the compiled API with `npm.cmd start` after configuring `NODE_ENV=production` and PostgreSQL. Production startup exits rather than serving from memory when PostgreSQL is unavailable. The repository does not include a static-file server/reverse proxy, TLS configuration, process manager, migration runner, cloud infrastructure definitions, or deployment workflow; those must be supplied by the deployment environment. The included Compose file starts only PostgreSQL and Redis, not the application.
 
 ---
 

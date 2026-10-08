@@ -4,7 +4,7 @@ import { WorkerAuthModal } from '../components/auth/WorkerAuthModal';
 import { BrandLogo } from '../components/common/BrandLogo';
 import { Icon } from '../components/common/Icons';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
 const ADMIN_TOKEN_KEY = 'syncstock_admin_token';
 const ADMIN_USER_KEY = 'syncstock_admin_user';
 const WORKER_TOKEN_KEY = 'syncstock_worker_token';

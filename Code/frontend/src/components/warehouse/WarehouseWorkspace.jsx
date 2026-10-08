@@ -12,6 +12,8 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
 
   // Receiving Goods State
   const [selectedPoId, setSelectedPoId] = useState('');
+  const [receivingWarehouseId, setReceivingWarehouseId] = useState('JHB-01');
+  const [receivingBinCode, setReceivingBinCode] = useState('A-01');
   const [receivedQty, setReceivedQty] = useState('');
   const [receivingCondition, setReceivingCondition] = useState('GOOD');
   const [receivingNotes, setReceivingNotes] = useState('');
@@ -37,7 +39,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
   const [adjProductId, setAdjProductId] = useState('');
   const [adjType, setAdjType] = useState('ADD');
   const [adjQty, setAdjQty] = useState(5);
-  const [adjReason, setAdjReason] = useState('Supplier Stock Received');
+  const [adjReason, setAdjReason] = useState('Damaged goods written off');
   const [adjLoading, setAdjLoading] = useState(false);
 
   // Online Fulfillment State
@@ -62,6 +64,8 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
         },
         body: JSON.stringify({
           quantity: Number(receivedQty) || po?.remainingQuantity || 1,
+          warehouseId: receivingWarehouseId,
+          binCode: receivingBinCode,
         }),
       });
 
@@ -115,7 +119,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
       }
 
       onRefresh();
-      onNotify?.(`Audit ${data.auditRecord.auditNumber} reconciled and logged to immutable audit trail`, 'success');
+      onNotify?.(`Audit ${data.auditRecord.auditNumber} reconciled and recorded in the audit log`, 'success');
     } catch (err) {
       onNotify?.(err.message, 'error');
     } finally {
@@ -130,8 +134,8 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
 
     setAdjLoading(true);
     try {
-      const qtyDelta = adjType === 'ADD' ? Number(adjQty) : -Number(adjQty);
-      const res = await fetch(`${apiBase}/api/receiving`, {
+      const product = products.find((entry) => entry.id === Number(adjProductId));
+      const res = await fetch(`${apiBase}/api/inventory/adjustments`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -139,16 +143,19 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
         },
         body: JSON.stringify({
           productId: Number(adjProductId),
-          quantity: Math.abs(qtyDelta),
-          notes: `Manual adjustment (${adjType}): ${adjReason}`,
+          quantity: Number(adjQty),
+          type: adjType,
+          reason: adjReason,
+          warehouseId: product?.warehouseId,
+          binCode: product?.binLocation,
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.error || 'Failed to apply stock adjustment');
 
       onRefresh();
-      onNotify?.(`Stock adjustment applied successfully`, 'success');
+      onNotify?.(`Stock adjustment recorded for ${data.movement.warehouseId}/${data.movement.binLocation}`, 'success');
       setAdjProductId('');
     } catch (err) {
       onNotify?.(err.message, 'error');
@@ -249,7 +256,14 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                     onChange={(e) => {
                       setSelectedPoId(e.target.value);
                       const po = purchaseOrders.find((p) => p.id === Number(e.target.value));
-                      if (po) setReceivedQty(po.remainingQuantity);
+                      if (po) {
+                        setReceivedQty(po.remainingQuantity);
+                        const product = products.find((entry) => entry.sku === po.sku);
+                        if (product) {
+                          setReceivingWarehouseId(product.warehouseId);
+                          setReceivingBinCode(product.binLocation);
+                        }
+                      }
                     }}
                     required
                   >
@@ -286,6 +300,27 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                       <option value="DAMAGED">Damaged in Transit</option>
                       <option value="SHORTAGE">Short-Shipped / Missing Units</option>
                     </select>
+                  </div>
+                </div>
+
+                <div className="grid-cols-2">
+                  <div className="form-group">
+                    <label className="form-label">Receiving Warehouse ID</label>
+                    <input
+                      className="form-input"
+                      value={receivingWarehouseId}
+                      onChange={(e) => setReceivingWarehouseId(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Receiving Bin</label>
+                    <input
+                      className="form-input"
+                      value={receivingBinCode}
+                      onChange={(e) => setReceivingBinCode(e.target.value)}
+                      required
+                    />
                   </div>
                 </div>
 
@@ -428,11 +463,14 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                   <option value="">-- Choose item --</option>
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) - Current Stock: {p.stock} units
+                      {p.name} ({p.sku}) - Total: {p.stock} units; adjustment at {p.warehouseId}/{p.binLocation}
                     </option>
                   ))}
                 </select>
               </div>
+              <p className="form-help">
+                Adjustments apply to the product's primary warehouse/bin. Stock transfers are not supported here.
+              </p>
 
               <div className="grid-cols-2">
                 <div className="form-group">
@@ -449,6 +487,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                     type="number"
                     className="form-input"
                     min="1"
+                    step="1"
                     value={adjQty}
                     onChange={(e) => setAdjQty(Number(e.target.value))}
                     required
@@ -460,8 +499,8 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                 <label className="form-label">Reason for Adjustment</label>
                 <select className="form-select" value={adjReason} onChange={(e) => setAdjReason(e.target.value)}>
                   <option value="Damaged goods written off">Damaged goods written off</option>
-                  <option value="Supplier stock arrived">Supplier stock arrived</option>
-                  <option value="Internal transfer between facilities">Internal transfer between facilities</option>
+                  <option value="Expired stock written off">Expired stock written off</option>
+                  <option value="Stock correction">Stock correction</option>
                   <option value="Promotional sample allocation">Promotional sample allocation</option>
                 </select>
               </div>
@@ -534,4 +573,3 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
     </div>
   );
 };
-

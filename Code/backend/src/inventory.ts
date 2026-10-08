@@ -44,6 +44,16 @@ export type ProductSnapshot = Product & {
   status: ProductStatus;
 };
 
+export type InventoryItem = {
+  id: string;
+  productId: number;
+  warehouseId: string;
+  binCode: string;
+  qtyOnHand: number;
+  qtyReserved: number;
+  updatedAt: string;
+};
+
 export type StockMovement = {
   id: number;
   productId: number;
@@ -79,6 +89,7 @@ export type SaleReceipt = {
   discountAmount: number;
   total: number;
   paymentMethod: 'CASH' | 'CARD' | 'QR';
+  paymentReference?: string;
   tenderAmount?: number;
   changeAmount?: number;
   cashierName: string;
@@ -374,6 +385,16 @@ export const products: Product[] = [
   },
 ];
 
+export const inventoryItems: InventoryItem[] = products.map((product) => ({
+  id: `${product.id}:${product.warehouseId}:${product.binLocation}`,
+  productId: product.id,
+  warehouseId: product.warehouseId,
+  binCode: product.binLocation,
+  qtyOnHand: product.stock,
+  qtyReserved: product.qtyReserved,
+  updatedAt: product.updatedAt,
+}));
+
 export const stockMovements: StockMovement[] = [
   {
     id: 1,
@@ -561,6 +582,324 @@ export const findProductById = (id: number): Product | undefined => {
   return products.find((p) => p.id === id);
 };
 
+const storedDate = (value: unknown): string => value ? new Date(value as string | Date).toISOString() : new Date().toISOString();
+
+export const hydrateSalesReceipts = (storedReceipts: Array<Record<string, any>>): void => {
+  if (storedReceipts.length === 0) return;
+  salesReceipts.splice(0, salesReceipts.length, ...storedReceipts.map((stored) => ({
+    id: Number(stored.id),
+    receiptNumber: String(stored.receiptNumber),
+    items: (stored.items ?? []).map((item: Record<string, any>) => ({
+      productId: Number(item.productId),
+      sku: String(item.sku),
+      name: String(item.name),
+      quantity: Number(item.quantity),
+      unitPrice: Number(item.unitPrice),
+      lineTotal: Number(item.lineTotal),
+    })),
+    subtotal: Number(stored.subtotal),
+    vatAmount: Number(stored.vatAmount),
+    discountAmount: Number(stored.discountAmount),
+    total: Number(stored.total),
+    paymentMethod: stored.paymentMethod as SaleReceipt['paymentMethod'],
+    paymentReference: stored.paymentReference ?? undefined,
+    tenderAmount: stored.tenderAmount == null ? undefined : Number(stored.tenderAmount),
+    changeAmount: stored.changeAmount == null ? undefined : Number(stored.changeAmount),
+    cashierName: String(stored.cashierName),
+    cashierEmployeeId: String(stored.cashierEmployeeId),
+    createdAt: storedDate(stored.createdAt),
+    notes: stored.notes ?? undefined,
+  })));
+};
+
+export const hydrateStockMovements = (storedMovements: Array<Record<string, any>>): void => {
+  if (storedMovements.length === 0) return;
+  stockMovements.splice(0, stockMovements.length, ...storedMovements.map((stored) => ({
+    id: Number(stored.id),
+    productId: Number(stored.productId),
+    sku: String(stored.sku),
+    type: stored.type as StockMovementType,
+    quantity: Number(stored.quantity),
+    timestamp: storedDate(stored.createdAt ?? stored.timestamp),
+    notes: stored.notes ?? undefined,
+    actor: stored.actor ?? undefined,
+    reference: stored.reference ?? undefined,
+    warehouseId: stored.warehouseId ?? undefined,
+    binLocation: stored.binLocation ?? undefined,
+  })));
+};
+
+export const hydrateCustomerOrders = (storedOrders: Array<Record<string, any>>): void => {
+  if (storedOrders.length === 0) return;
+  customerOrders.splice(0, customerOrders.length, ...storedOrders.map((stored) => ({
+    id: Number(stored.id),
+    orderNumber: String(stored.orderNumber),
+    customerName: String(stored.customerName),
+    status: stored.status as CustomerOrderStatus,
+    items: (stored.items ?? []).map((item: Record<string, any>) => ({
+      productId: Number(item.productId),
+      sku: String(item.sku),
+      name: String(item.name),
+      quantity: Number(item.quantity),
+      unitPrice: Number(item.unitPrice),
+      lineTotal: Number(item.lineTotal),
+    })),
+    total: Number(stored.total),
+    createdAt: storedDate(stored.createdAt),
+    updatedAt: storedDate(stored.updatedAt),
+    trackingNumber: stored.trackingNumber ?? undefined,
+    shippingAddress: stored.shippingAddress ?? undefined,
+  })));
+};
+
+export const hydrateCycleCounts = (storedCounts: Array<Record<string, any>>): void => {
+  if (storedCounts.length === 0) return;
+  cycleCounts.splice(0, cycleCounts.length, ...storedCounts.map((stored) => ({
+    id: Number(stored.id),
+    auditNumber: String(stored.auditNumber),
+    warehouseId: String(stored.warehouseId),
+    binCode: String(stored.binCode),
+    items: (stored.items ?? []).map((item: Record<string, any>) => ({
+      productId: Number(item.productId),
+      sku: String(item.sku),
+      productName: String(item.productName),
+      systemQty: Number(item.systemQty),
+      countedQty: Number(item.countedQty),
+      discrepancy: Number(item.discrepancy),
+      verified: Boolean(item.verified),
+    })),
+    status: stored.status as CycleCountEntry['status'],
+    performedBy: String(stored.performedBy),
+    performedAt: storedDate(stored.performedAt),
+    managerNotes: stored.managerNotes ?? undefined,
+  })));
+};
+
+const getOrCreateInventoryItem = (product: Product, warehouseId: string, binCode: string): InventoryItem => {
+  const existing = inventoryItems.find(
+    (item) => item.productId === product.id && item.warehouseId === warehouseId && item.binCode === binCode
+  );
+  if (existing) return existing;
+
+  const item: InventoryItem = {
+    id: `${product.id}:${warehouseId}:${binCode}`,
+    productId: product.id,
+    warehouseId,
+    binCode,
+    qtyOnHand: 0,
+    qtyReserved: 0,
+    updatedAt: new Date().toISOString(),
+  };
+  inventoryItems.push(item);
+  return item;
+};
+
+const syncProductInventoryTotals = (product: Product): void => {
+  const locations = inventoryItems.filter((item) => item.productId === product.id);
+  product.stock = locations.reduce((total, item) => total + item.qtyOnHand, 0);
+  product.qtyReserved = locations.reduce((total, item) => total + item.qtyReserved, 0);
+};
+
+export const getInventoryItems = (productId?: number): InventoryItem[] => {
+  return inventoryItems
+    .filter((item) => productId === undefined || item.productId === productId)
+    .map((item) => ({ ...item }));
+};
+
+export const hydrateInventoryItems = (storedItems: Array<Partial<InventoryItem> & Pick<InventoryItem, 'id' | 'productId' | 'warehouseId' | 'binCode'>>): void => {
+  inventoryItems.splice(0, inventoryItems.length);
+  for (const stored of storedItems) {
+    inventoryItems.push({
+      id: stored.id,
+      productId: Number(stored.productId),
+      warehouseId: stored.warehouseId,
+      binCode: stored.binCode,
+      qtyOnHand: Number(stored.qtyOnHand ?? 0),
+      qtyReserved: Number(stored.qtyReserved ?? 0),
+      updatedAt: stored.updatedAt ?? new Date().toISOString(),
+    });
+  }
+
+  for (const product of products) {
+    if (!inventoryItems.some((item) => item.productId === product.id)) {
+      const item = getOrCreateInventoryItem(product, product.warehouseId, product.binLocation);
+      item.qtyOnHand = product.stock;
+      item.qtyReserved = product.qtyReserved;
+    }
+    syncProductInventoryTotals(product);
+  }
+};
+
+export const receiveInventoryAtLocation = (
+  productId: number,
+  quantity: number,
+  warehouseId: string,
+  binCode: string,
+): ProductSnapshot => {
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error('Receiving quantity must be a positive integer');
+  }
+  if (!warehouseId.trim() || !binCode.trim()) {
+    throw new Error('Warehouse and bin are required');
+  }
+
+  const product = findProductById(productId);
+  if (!product) throw new Error(`Product not found for receiving: ID ${productId}`);
+
+  const item = getOrCreateInventoryItem(product, warehouseId.trim(), binCode.trim());
+  item.qtyOnHand += quantity;
+  item.updatedAt = new Date().toISOString();
+  syncProductInventoryTotals(product);
+  product.updatedAt = item.updatedAt;
+  return toProductSnapshot(product);
+};
+
+export const createStockAdjustment = (
+  productId: number,
+  quantity: number,
+  adjustmentType: 'ADD' | 'DEDUCT',
+  reason: string,
+  actor = 'Warehouse Staff',
+  warehouseId?: string,
+  binCode?: string,
+): { movement: StockMovement; updatedProduct: ProductSnapshot } => {
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error('Adjustment quantity must be a positive integer');
+  }
+  if (adjustmentType !== 'ADD' && adjustmentType !== 'DEDUCT') {
+    throw new Error('Adjustment type must be ADD or DEDUCT');
+  }
+  if (!reason.trim()) {
+    throw new Error('Adjustment reason is required');
+  }
+
+  const product = findProductById(productId);
+  if (!product) {
+    throw new Error(`Product not found for adjustment: ID ${productId}`);
+  }
+
+  const adjustmentWarehouseId = warehouseId?.trim() || product.warehouseId;
+  const adjustmentBinCode = binCode?.trim() || product.binLocation;
+  if (!adjustmentWarehouseId || !adjustmentBinCode) {
+    throw new Error('Warehouse and bin are required');
+  }
+
+  const location = inventoryItems.find((item) =>
+    item.productId === product.id
+    && item.warehouseId === adjustmentWarehouseId
+    && item.binCode === adjustmentBinCode
+  );
+  if (adjustmentType === 'DEDUCT' && (!location || quantity > location.qtyOnHand - location.qtyReserved)) {
+    throw new Error(`Insufficient available stock for ${product.name} at ${adjustmentWarehouseId}/${adjustmentBinCode}`);
+  }
+
+  const item = location ?? getOrCreateInventoryItem(product, adjustmentWarehouseId, adjustmentBinCode);
+  item.qtyOnHand += adjustmentType === 'ADD' ? quantity : -quantity;
+  item.updatedAt = new Date().toISOString();
+  syncProductInventoryTotals(product);
+  product.updatedAt = item.updatedAt;
+
+  const movement: StockMovement = {
+    id: stockMovements.length + 1,
+    productId: product.id,
+    sku: product.sku,
+    type: 'AUDIT_ADJUSTMENT',
+    quantity,
+    timestamp: item.updatedAt,
+    notes: `Manual stock adjustment (${adjustmentType === 'ADD' ? '+' : '-'}${quantity}): ${reason.trim()}`,
+    actor,
+    reference: `ADJ-${Date.now().toString().slice(-6)}`,
+    warehouseId: adjustmentWarehouseId,
+    binLocation: adjustmentBinCode,
+  };
+  stockMovements.unshift(movement);
+
+  return { movement, updatedProduct: toProductSnapshot(product) };
+};
+
+const ensureProductInventory = (product: Product): InventoryItem[] => {
+  const locations = inventoryItems.filter((item) => item.productId === product.id);
+  if (locations.length > 0) return locations;
+
+  const location = getOrCreateInventoryItem(product, product.warehouseId, product.binLocation);
+  location.qtyOnHand = product.stock;
+  location.qtyReserved = product.qtyReserved;
+  return [location];
+};
+
+const consumeAvailableStock = (product: Product, quantity: number): InventoryItem[] => {
+  const locations = ensureProductInventory(product);
+  const available = locations.reduce((total, item) => total + Math.max(0, item.qtyOnHand - item.qtyReserved), 0);
+  if (quantity > available) throw new Error(`Insufficient available stock for ${product.name}`);
+
+  let remaining = quantity;
+  const allocations: InventoryItem[] = [];
+  for (const item of locations) {
+    const consumed = Math.min(remaining, Math.max(0, item.qtyOnHand - item.qtyReserved));
+    if (consumed === 0) continue;
+    item.qtyOnHand -= consumed;
+    item.updatedAt = new Date().toISOString();
+    allocations.push({ ...item, qtyOnHand: consumed, qtyReserved: 0 });
+    remaining -= consumed;
+    if (remaining === 0) break;
+  }
+  syncProductInventoryTotals(product);
+  return allocations;
+};
+
+const reserveAvailableStock = (product: Product, quantity: number): void => {
+  const locations = ensureProductInventory(product);
+  const available = locations.reduce((total, item) => total + Math.max(0, item.qtyOnHand - item.qtyReserved), 0);
+  if (quantity > available) throw new Error(`Insufficient available stock for ${product.name}`);
+
+  let remaining = quantity;
+  for (const item of locations) {
+    const reserved = Math.min(remaining, Math.max(0, item.qtyOnHand - item.qtyReserved));
+    item.qtyReserved += reserved;
+    item.updatedAt = new Date().toISOString();
+    remaining -= reserved;
+    if (remaining === 0) break;
+  }
+  syncProductInventoryTotals(product);
+};
+
+const consumeReservedStock = (product: Product, quantity: number): InventoryItem[] => {
+  const locations = ensureProductInventory(product);
+  const reserved = locations.reduce((total, item) => total + item.qtyReserved, 0);
+  if (quantity > reserved) throw new Error(`Insufficient reserved stock for ${product.name}`);
+
+  let remaining = quantity;
+  const allocations: InventoryItem[] = [];
+  for (const item of locations) {
+    const consumed = Math.min(remaining, item.qtyReserved);
+    if (consumed === 0) continue;
+    item.qtyOnHand -= consumed;
+    item.qtyReserved -= consumed;
+    item.updatedAt = new Date().toISOString();
+    allocations.push({ ...item, qtyOnHand: consumed, qtyReserved: 0 });
+    remaining -= consumed;
+    if (remaining === 0) break;
+  }
+  syncProductInventoryTotals(product);
+  return allocations;
+};
+
+const releaseReservedStock = (product: Product, quantity: number): void => {
+  const locations = ensureProductInventory(product);
+  const reserved = locations.reduce((total, item) => total + item.qtyReserved, 0);
+  if (quantity > reserved) throw new Error(`Insufficient reserved stock for ${product.name}`);
+
+  let remaining = quantity;
+  for (const item of locations) {
+    const released = Math.min(remaining, item.qtyReserved);
+    item.qtyReserved -= released;
+    item.updatedAt = new Date().toISOString();
+    remaining -= released;
+    if (remaining === 0) break;
+  }
+  syncProductInventoryTotals(product);
+};
+
 export const hydrateProducts = (storedProducts: Array<Partial<Product> & { id: number; sku: string }>): void => {
   for (const stored of storedProducts) {
     const existingIndex = products.findIndex((product) => product.id === stored.id || product.sku === stored.sku);
@@ -588,6 +927,11 @@ export const hydrateProducts = (storedProducts: Array<Partial<Product> & { id: n
 
     if (existingIndex >= 0) products[existingIndex] = hydrated;
     else products.push(hydrated);
+
+    const primaryLocation = getOrCreateInventoryItem(hydrated, hydrated.warehouseId, hydrated.binLocation);
+    primaryLocation.qtyOnHand = hydrated.stock;
+    primaryLocation.qtyReserved = hydrated.qtyReserved;
+    primaryLocation.updatedAt = hydrated.updatedAt;
   }
 };
 
@@ -618,6 +962,37 @@ export const stockAfterReceive = (currentStock: number, quantity: number): numbe
     throw new Error('Quantity must be a positive whole number');
   }
   return currentStock + quantity;
+};
+
+export const calculateSaleTotal = (items: SaleLineInput[], discountPercent = 0): number => {
+  if (!items || items.length === 0) throw new Error('Sale requires at least one item');
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+    throw new Error('Discount must be between 0 and 100 percent');
+  }
+
+  const quantitiesByProduct = new Map<number, number>();
+  for (const item of items) {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      throw new Error(`Invalid quantity ${item.quantity} for product ID ${item.productId}`);
+    }
+    quantitiesByProduct.set(item.productId, (quantitiesByProduct.get(item.productId) ?? 0) + item.quantity);
+  }
+
+  for (const [productId, quantity] of quantitiesByProduct) {
+    const product = products.find((entry) => entry.id === productId && entry.isActive);
+    if (!product) throw new Error(`Product not found: ID ${productId}`);
+    const available = getAvailableStock(product);
+    if (quantity > available) {
+      throw new Error(`Insufficient stock for ${product.name} (SKU: ${product.sku}). Requested: ${quantity}, Available: ${available}`);
+    }
+  }
+
+  const subtotal = items.reduce((total, item) => {
+    const product = products.find((entry) => entry.id === item.productId)!;
+    return total + product.price * item.quantity;
+  }, 0);
+  const discountAmount = Number(((subtotal * discountPercent) / 100).toFixed(2));
+  return Number((subtotal - discountAmount).toFixed(2));
 };
 
 export const getAvailableStock = (product: Product): number => {
@@ -705,6 +1080,10 @@ export const createProduct = (data: {
   };
 
   products.push(newProduct);
+  const initialInventoryItem = getOrCreateInventoryItem(newProduct, newProduct.warehouseId, newProduct.binLocation);
+  initialInventoryItem.qtyOnHand = newProduct.stock;
+  initialInventoryItem.qtyReserved = newProduct.qtyReserved;
+  initialInventoryItem.updatedAt = newProduct.updatedAt;
   return toProductSnapshot(newProduct);
 };
 
@@ -714,6 +1093,7 @@ export const createSaleTransaction = (
     cashierName?: string;
     cashierEmployeeId?: string;
     paymentMethod?: 'CASH' | 'CARD' | 'QR';
+    paymentReference?: string;
     discountPercent?: number;
     tenderAmount?: number;
     notes?: string;
@@ -745,16 +1125,29 @@ export const createSaleTransaction = (
   }
 
   const receiptNumber = `REC-${Date.now().toString().slice(-6)}`;
-  let subtotal = 0;
+  const subtotal = items.reduce((total, item) => {
+    const product = products.find((candidate) => candidate.id === item.productId)!;
+    return total + product.price * item.quantity;
+  }, 0);
+  const discountPercent = options?.discountPercent ?? 0;
+  const discountAmount = Number(((subtotal * discountPercent) / 100).toFixed(2));
+  const finalTotal = Number((subtotal - discountAmount).toFixed(2));
+  const paymentMethod = options?.paymentMethod ?? 'CASH';
+  const tender = paymentMethod === 'CASH' ? options?.tenderAmount : options?.tenderAmount ?? finalTotal;
+
+  if (paymentMethod !== 'CASH' && !options?.paymentReference) {
+    throw new Error('Electronic payment requires a provider authorization');
+  }
+  if (tender === undefined || !Number.isFinite(tender) || tender < finalTotal) {
+    throw new Error(`Insufficient payment. Total due: ${finalTotal.toFixed(2)}`);
+  }
 
   for (const item of items) {
     const product = products.find((p) => p.id === item.productId)!;
-    product.stock -= item.quantity;
+    const allocations = consumeAvailableStock(product, item.quantity);
     product.updatedAt = new Date().toISOString();
 
     const lineTotal = Number((product.price * item.quantity).toFixed(2));
-    subtotal += lineTotal;
-
     lines.push({
       productId: product.id,
       sku: product.sku,
@@ -764,31 +1157,29 @@ export const createSaleTransaction = (
       lineTotal,
     });
 
-    const movement: StockMovement = {
-      id: stockMovements.length + 1,
-      productId: product.id,
-      sku: product.sku,
-      type: 'SALE',
-      quantity: item.quantity,
-      timestamp: new Date().toISOString(),
-      notes: options?.notes || `POS Sale receipt ${receiptNumber}`,
-      actor: options?.cashierName ? `${options.cashierName} (${options.cashierEmployeeId ?? 'STAFF'})` : 'Cashier',
-      reference: receiptNumber,
-      warehouseId: product.warehouseId,
-      binLocation: product.binLocation,
-    };
+    for (const allocation of allocations) {
+      const movement: StockMovement = {
+        id: stockMovements.length + 1,
+        productId: product.id,
+        sku: product.sku,
+        type: 'SALE',
+        quantity: allocation.qtyOnHand,
+        timestamp: new Date().toISOString(),
+        notes: options?.notes || `POS Sale receipt ${receiptNumber}`,
+        actor: options?.cashierName ? `${options.cashierName} (${options.cashierEmployeeId ?? 'STAFF'})` : 'Cashier',
+        reference: receiptNumber,
+        warehouseId: allocation.warehouseId,
+        binLocation: allocation.binCode,
+      };
 
-    stockMovements.unshift(movement);
-    movements.push(movement);
+      stockMovements.unshift(movement);
+      movements.push(movement);
+    }
   }
 
-  const discountPercent = options?.discountPercent ?? 0;
-  const discountAmount = Number(((subtotal * discountPercent) / 100).toFixed(2));
-  const finalTotal = Number((subtotal - discountAmount).toFixed(2));
   const vatAmount = Number(((finalTotal * 15) / 115).toFixed(2));
   const netSubtotal = Number((finalTotal - vatAmount).toFixed(2));
 
-  const tender = options?.tenderAmount ?? finalTotal;
   const change = Number(Math.max(0, tender - finalTotal).toFixed(2));
 
   const receipt: SaleReceipt = {
@@ -799,7 +1190,8 @@ export const createSaleTransaction = (
     vatAmount,
     discountAmount,
     total: finalTotal,
-    paymentMethod: options?.paymentMethod ?? 'CASH',
+    paymentMethod,
+    paymentReference: options?.paymentReference,
     tenderAmount: tender,
     changeAmount: change,
     cashierName: options?.cashierName ?? 'Cashier Staff',
@@ -816,6 +1208,7 @@ export const createReturn = (data: {
   receiptNumber?: string;
   productId: number;
   quantity: number;
+  unitPrice?: number;
   reason: ReturnReason;
   notes?: string;
   actor?: string;
@@ -831,10 +1224,9 @@ export const createReturn = (data: {
     throw new Error(`Product not found for return: ID ${productId}`);
   }
 
-  product.stock += quantity;
-  product.updatedAt = new Date().toISOString();
+  receiveInventoryAtLocation(product.id, quantity, product.warehouseId, product.binLocation);
 
-  const refundAmount = Number((product.price * quantity).toFixed(2));
+  const refundAmount = Number(((data.unitPrice ?? product.price) * quantity).toFixed(2));
   const returnId = `RTN-${Date.now().toString().slice(-6)}`;
 
   const movement: StockMovement = {
@@ -866,7 +1258,9 @@ export const createReceiving = (
   quantity: number,
   notes?: string,
   actor = 'Warehouse Staff',
-  poNumber?: string
+  poNumber?: string,
+  warehouseId?: string,
+  binCode?: string,
 ): { movement: StockMovement; updatedProduct: ProductSnapshot } => {
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error('Receiving quantity must be a positive integer');
@@ -877,8 +1271,9 @@ export const createReceiving = (
     throw new Error(`Product not found for receiving: ID ${productId}`);
   }
 
-  product.stock += quantity;
-  product.updatedAt = new Date().toISOString();
+  const receivingWarehouseId = warehouseId ?? product.warehouseId;
+  const receivingBinCode = binCode ?? product.binLocation;
+  receiveInventoryAtLocation(product.id, quantity, receivingWarehouseId, receivingBinCode);
 
   const movement: StockMovement = {
     id: stockMovements.length + 1,
@@ -890,8 +1285,8 @@ export const createReceiving = (
     notes: notes || `Goods received against PO ${poNumber ?? 'N/A'}`,
     actor: actor ?? 'Warehouse Staff',
     reference: poNumber ?? `GRN-${Date.now().toString().slice(-5)}`,
-    warehouseId: product.warehouseId,
-    binLocation: product.binLocation,
+    warehouseId: receivingWarehouseId,
+    binLocation: receivingBinCode,
   };
 
   stockMovements.unshift(movement);
@@ -916,8 +1311,12 @@ export const recordCycleCount = (data: {
     const product = products.find((p) => p.id === entry.productId);
     if (!product) continue;
 
-    const systemQty = product.stock;
+    const location = getOrCreateInventoryItem(product, data.warehouseId, data.binCode);
+    const systemQty = location.qtyOnHand;
     const countedQty = Number(entry.countedQty);
+    if (!Number.isInteger(countedQty) || countedQty < 0 || countedQty < location.qtyReserved) {
+      throw new Error(`Invalid counted quantity for ${product.name} at ${data.binCode}`);
+    }
     const discrepancy = countedQty - systemQty;
 
     processedItems.push({
@@ -931,7 +1330,9 @@ export const recordCycleCount = (data: {
     });
 
     if (discrepancy !== 0) {
-      product.stock = countedQty;
+      location.qtyOnHand = countedQty;
+      location.updatedAt = new Date().toISOString();
+      syncProductInventoryTotals(product);
       product.updatedAt = new Date().toISOString();
 
       const movement: StockMovement = {
@@ -993,7 +1394,7 @@ export const createOnlineOrder = (data: {
 
   for (const item of data.items) {
     const product = products.find((p) => p.id === item.productId)!;
-    product.qtyReserved = (product.qtyReserved ?? 0) + item.quantity;
+    reserveAvailableStock(product, item.quantity);
 
     const lineTotal = Number((product.price * item.quantity).toFixed(2));
     total += lineTotal;
@@ -1038,23 +1439,24 @@ export const commitReservedOrder = (orderId: number): CustomerOrder => {
   for (const item of order.items) {
     const product = products.find((p) => p.id === item.productId);
     if (product) {
-      product.stock -= item.quantity;
-      product.qtyReserved = Math.max(0, (product.qtyReserved ?? 0) - item.quantity);
+      const allocations = consumeReservedStock(product, item.quantity);
       product.updatedAt = new Date().toISOString();
 
-      stockMovements.unshift({
-        id: stockMovements.length + 1,
-        productId: product.id,
-        sku: product.sku,
-        type: 'SALE',
-        quantity: item.quantity,
-        timestamp: new Date().toISOString(),
-        notes: `Online order fulfilled: ${order.orderNumber}`,
-        actor: 'Online Fulfillment Service',
-        reference: order.orderNumber,
-        warehouseId: product.warehouseId,
-        binLocation: product.binLocation,
-      });
+      for (const allocation of allocations) {
+        stockMovements.unshift({
+          id: stockMovements.length + 1,
+          productId: product.id,
+          sku: product.sku,
+          type: 'SALE',
+          quantity: allocation.qtyOnHand,
+          timestamp: new Date().toISOString(),
+          notes: `Online order fulfilled: ${order.orderNumber}`,
+          actor: 'Online Fulfillment Service',
+          reference: order.orderNumber,
+          warehouseId: allocation.warehouseId,
+          binLocation: allocation.binCode,
+        });
+      }
     }
   }
 
@@ -1076,7 +1478,7 @@ export const releaseReservedOrder = (orderId: number): CustomerOrder => {
   for (const item of order.items) {
     const product = products.find((p) => p.id === item.productId);
     if (product) {
-      product.qtyReserved = Math.max(0, (product.qtyReserved ?? 0) - item.quantity);
+      releaseReservedStock(product, item.quantity);
       product.updatedAt = new Date().toISOString();
     }
   }

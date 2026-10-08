@@ -15,6 +15,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
+    "ml-regression": "^6.3.0",
     "nodemailer": "^10.0.10",
     "otplib": "^13.5.0",
     "pg": "^8.17.0",

@@ -12,6 +12,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
   const [infoMessage, setInfoMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [setupSuccessUser, setSetupSuccessUser] = useState(null);
+  const [setupToken, setSetupToken] = useState('');
 
   // Email Confirmation OTP State
   const [emailVerifyIdentifier, setEmailVerifyIdentifier] = useState('');
@@ -40,6 +41,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       setError('');
       setInfoMessage('');
       setSetupSuccessUser(null);
+      setSetupToken('');
       setEmailVerifyIdentifier('');
       setEmailVerifyCode('');
       setEmailSentData(null);
@@ -98,6 +100,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       if (data.requiresFirstPasswordSetup) {
         setIsFirstTimeMode(true);
         setSetupSuccessUser(data.user);
+        setSetupToken(data.token);
         setEmailVerifyIdentifier(data.user.employeeId);
         setLoading(false);
         return;
@@ -126,7 +129,10 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     try {
       const res = await fetch(`${apiBase}/api/auth/set-first-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${setupToken}`,
+        },
         body: JSON.stringify({
           employeeId: setupSuccessUser?.employeeId || employeeId,
           newPassword,

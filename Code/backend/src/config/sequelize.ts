@@ -6,7 +6,10 @@ dotenv.config();
 const dbHost = process.env.DB_HOST || 'localhost';
 const dbPort = Number(process.env.DB_PORT || 5432);
 const dbUser = process.env.DB_USER || 'postgres';
-const dbPassword = process.env.DB_PASSWORD || 'M@th0nsi';
+const dbPassword = process.env.DB_PASSWORD;
+if (!dbPassword) {
+  throw new Error('DB_PASSWORD must be set before initializing the database.');
+}
 const dbName = process.env.DB_NAME || 'inventory_db';
 
 export const sequelize = new Sequelize(dbName, dbUser, dbPassword, {

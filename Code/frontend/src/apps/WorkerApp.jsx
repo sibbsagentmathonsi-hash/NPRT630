@@ -6,7 +6,7 @@ import { Icon } from '../components/common/Icons';
 import { ManagerWorkspace } from '../components/manager/ManagerWorkspace';
 import { WarehouseWorkspace } from '../components/warehouse/WarehouseWorkspace';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
 const WORKER_TOKEN_KEY = 'syncstock_worker_token';
 const WORKER_USER_KEY = 'syncstock_worker_user';
 

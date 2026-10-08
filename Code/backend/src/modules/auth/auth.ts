@@ -1,6 +1,8 @@
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
+import bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 
 dotenv.config();
@@ -31,9 +33,10 @@ export type User = {
   lastLoginAt?: string;
   createdAt: string;
   password?: string;
+  passwordHash?: string;
 };
 
-export type PublicUser = Omit<User, 'password' | 'mfaSecret'>;
+export type PublicUser = Omit<User, 'password' | 'passwordHash' | 'mfaSecret'>;
 
 export type SecurityAuditLog = {
   id: string;
@@ -41,17 +44,17 @@ export type SecurityAuditLog = {
   actor: string;
   actorRole: string;
   eventType:
-    | 'USER_LOGIN'
-    | 'FIRST_PASSWORD_SET'
-    | 'USER_REGISTERED'
-    | 'USER_ROLE_UPDATED'
-    | 'USER_STATUS_UPDATED'
-    | 'MFA_RESET'
-    | 'EMAIL_CODE_SENT'
-    | 'EMAIL_VERIFIED'
-    | 'PASSWORD_RESET_TRIGGERED'
-    | 'STOCK_OVERRIDE'
-    | 'PO_APPROVED';
+  | 'USER_LOGIN'
+  | 'FIRST_PASSWORD_SET'
+  | 'USER_REGISTERED'
+  | 'USER_ROLE_UPDATED'
+  | 'USER_STATUS_UPDATED'
+  | 'MFA_RESET'
+  | 'EMAIL_CODE_SENT'
+  | 'EMAIL_VERIFIED'
+  | 'PASSWORD_RESET_TRIGGERED'
+  | 'STOCK_OVERRIDE'
+  | 'PO_APPROVED';
   targetUserId?: number | string;
   details: string;
   ipAddress?: string;
@@ -81,6 +84,12 @@ export const securityAuditLogs: SecurityAuditLog[] = [
   },
 ];
 
+let securityAuditWriter: ((log: SecurityAuditLog) => void) | undefined;
+
+export const setSecurityAuditWriter = (writer: ((log: SecurityAuditLog) => void) | undefined): void => {
+  securityAuditWriter = writer;
+};
+
 export const logSecurityEvent = (
   eventType: SecurityAuditLog['eventType'],
   actor: string,
@@ -90,7 +99,7 @@ export const logSecurityEvent = (
   status: 'SUCCESS' | 'WARNING' | 'FAILURE' = 'SUCCESS'
 ): SecurityAuditLog => {
   const newLog: SecurityAuditLog = {
-    id: `SEC-LOG-${String(securityAuditLogs.length + 1).padStart(3, '0')}`,
+    id: `SEC-LOG-${randomUUID()}`,
     timestamp: new Date().toISOString(),
     actor,
     actorRole,
@@ -101,10 +110,11 @@ export const logSecurityEvent = (
     status,
   };
   securityAuditLogs.unshift(newLog);
+  securityAuditWriter?.(newLog);
   return newLog;
 };
 
-export const users: User[] = [
+export const users: User[] = process.env.NODE_ENV === 'production' ? [] : [
   {
     id: 1,
     employeeId: 'EMP-ADM-001',
@@ -122,8 +132,28 @@ export const users: User[] = [
   },
 ];
 
+export const hydrateUsers = (storedUsers: Array<Record<string, any>>): void => {
+  if (storedUsers.length === 0) return;
+  users.splice(0, users.length, ...storedUsers.map((stored) => ({
+    id: Number(stored.id),
+    employeeId: String(stored.employeeId),
+    name: String(stored.name),
+    email: String(stored.email),
+    role: stored.role as UserRole,
+    sector: stored.sector as EmployeeSector,
+    status: stored.status as UserStatus,
+    isFirstLogin: Boolean(stored.isFirstLogin),
+    mfaEnabled: Boolean(stored.mfaEnabled),
+    emailVerified: Boolean(stored.emailVerified),
+    mfaSecret: stored.mfaSecret ?? undefined,
+    lastLoginAt: stored.lastLoginAt ? new Date(stored.lastLoginAt).toISOString() : undefined,
+    createdAt: stored.createdAt ? new Date(stored.createdAt).toISOString() : new Date().toISOString(),
+    passwordHash: String(stored.passwordHash),
+  })));
+};
+
 export const toPublicUser = (user: User): PublicUser => {
-  const { password: _, mfaSecret: __, ...publicUser } = user;
+  const { password: _, passwordHash: __, mfaSecret: ___, ...publicUser } = user;
   return publicUser;
 };
 
@@ -135,16 +165,22 @@ export const getUsersByRole = (role: UserRole): PublicUser[] =>
 // OTP Verification In-Memory Store: email/employeeId -> { code, expiresAt }
 const emailVerificationStore = new Map<string, { code: string; expiresAt: number }>();
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-key';
+const getJwtSecret = (): string => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET must be set before signing or verifying tokens.');
+  }
+  return secret;
+};
 
 const smtpConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD);
 const mailer = smtpConfigured
   ? nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT ?? 587),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
-    })
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT ?? 587),
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
+  })
   : null;
 
 export const generateToken = (user: PublicUser): string => {
@@ -159,7 +195,7 @@ export const generateToken = (user: PublicUser): string => {
       isFirstLogin: user.isFirstLogin,
       emailVerified: user.emailVerified,
     },
-    JWT_SECRET,
+    getJwtSecret(),
     {
       expiresIn: '8h',
     }
@@ -167,7 +203,7 @@ export const generateToken = (user: PublicUser): string => {
 };
 
 export const verifyToken = (token: string) => {
-  return jwt.verify(token, JWT_SECRET) as {
+  return jwt.verify(token, getJwtSecret()) as {
     id: number;
     employeeId: string;
     email: string;
@@ -206,7 +242,10 @@ export const authenticateUser = (
   const clean = identifier.trim().toLowerCase();
   const user = users.find((u) => u.employeeId.toLowerCase() === clean || u.email.toLowerCase() === clean);
 
-  if (!user || user.password !== passwordAttempt) {
+  const passwordMatches = user?.passwordHash
+    ? bcrypt.compareSync(passwordAttempt, user.passwordHash)
+    : user?.password === passwordAttempt;
+  if (!user || !passwordMatches) {
     return undefined;
   }
 
@@ -330,8 +369,12 @@ export const setFirstPassword = (
   if (!user) {
     return { success: false, error: 'Employee account not found' };
   }
+  if (!user.isFirstLogin || user.status !== 'PENDING_SETUP') {
+    return { success: false, error: 'This account is not awaiting first-time password setup' };
+  }
 
   user.password = newPassword;
+  user.passwordHash = undefined;
   user.isFirstLogin = false;
   user.status = 'ACTIVE';
 

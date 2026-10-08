@@ -9,6 +9,11 @@ export interface StockMovementAttributes {
   type: 'SALE' | 'RETURN' | 'RECEIVE' | 'AUDIT_ADJUSTMENT' | 'RESERVE' | 'RELEASE';
   quantity: number;
   notes?: string;
+  actor?: string;
+  reference?: string;
+  warehouseId?: string;
+  binLocation?: string;
+  createdAt?: Date;
 }
 
 export type StockMovementCreationAttributes = Optional<StockMovementAttributes, 'id'>;
@@ -20,6 +25,11 @@ export class StockMovementModel extends Model<StockMovementAttributes, StockMove
   public type!: 'SALE' | 'RETURN' | 'RECEIVE' | 'AUDIT_ADJUSTMENT' | 'RESERVE' | 'RELEASE';
   public quantity!: number;
   public notes?: string;
+  public actor?: string;
+  public reference?: string;
+  public warehouseId?: string;
+  public binLocation?: string;
+  public createdAt?: Date;
 }
 
 StockMovementModel.init(
@@ -49,6 +59,10 @@ StockMovementModel.init(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    actor: { type: DataTypes.STRING(150), allowNull: true },
+    reference: { type: DataTypes.STRING(100), allowNull: true },
+    warehouseId: { type: DataTypes.STRING(30), allowNull: true },
+    binLocation: { type: DataTypes.STRING(40), allowNull: true },
   },
   {
     sequelize,
