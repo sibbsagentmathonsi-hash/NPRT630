@@ -509,10 +509,13 @@ app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), async (r
     return res.status(404).json({ error: 'Employee not found' });
   }
 
-  target.password = 'ResetPass123!';
+  const resetPassword = 'ResetPass123!';
+  const resetPasswordHash = await bcrypt.hash(resetPassword, 12);
+  target.password = undefined;
+  target.passwordHash = resetPasswordHash;
   target.isFirstLogin = true;
   target.status = 'PENDING_SETUP';
-  await persistUser(target, await bcrypt.hash('ResetPass123!', 12));
+  await persistUser(target, resetPasswordHash);
 
   logSecurityEvent(
     'PASSWORD_RESET_TRIGGERED',

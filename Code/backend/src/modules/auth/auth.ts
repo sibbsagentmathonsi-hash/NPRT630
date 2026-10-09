@@ -369,7 +369,7 @@ export const setFirstPassword = (
   if (!user) {
     return { success: false, error: 'Employee account not found' };
   }
-  if (!user.isFirstLogin || user.status !== 'PENDING_SETUP') {
+  if (!user.isFirstLogin) {
     return { success: false, error: 'This account is not awaiting first-time password setup' };
   }
 

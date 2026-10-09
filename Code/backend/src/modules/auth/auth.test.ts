@@ -14,6 +14,7 @@ import {
   sendEmailVerificationCode,
   setFirstPassword,
   toPublicUser,
+  users,
   validatePasswordStrength,
   verifyEmailCode,
   verifyMfa,
@@ -144,6 +145,25 @@ test('setFirstPassword activates newly registered user', () => {
   const login = authenticateUser(reg.user.employeeId, 'BrandNewP@ssw0rd2026!');
   assert.ok(login);
   assert.equal(login.status, 'ACTIVE');
+});
+
+test('setFirstPassword accepts reset-pending accounts when their status is already active', () => {
+  const reg = registerEmployee({
+    name: 'Reset Password Tester',
+    email: 'password-reset@test.local',
+    role: 'ADMIN',
+    sector: 'System Administration',
+  });
+  const resetTarget = users.find((user) => user.employeeId === reg.user.employeeId);
+  assert.ok(resetTarget);
+  resetTarget.status = 'ACTIVE';
+
+  const update = setFirstPassword(reg.user.employeeId, 'ResetSecureP@ss2026!');
+
+  assert.equal(update.success, true);
+  assert.equal(update.user?.status, 'ACTIVE');
+  assert.equal(update.user?.isFirstLogin, false);
+  assert.equal(setFirstPassword(reg.user.employeeId, 'AnotherPassword123!').success, false);
 });
 
 test('toPublicUser strips password field', () => {

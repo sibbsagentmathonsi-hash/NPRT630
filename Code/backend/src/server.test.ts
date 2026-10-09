@@ -22,6 +22,36 @@ test('production disables demo sign-in and applies the configured CORS allowlist
   try {
     process.env.NODE_ENV = 'production';
 
+    const { generateToken, toPublicUser, users } = await import('./modules/auth/auth');
+    const admin = users.find((user) => user.role === 'ADMIN');
+    assert.ok(admin);
+    const adminToken = generateToken(toPublicUser(admin));
+    const resetResponse = await fetch(`${baseUrl}/api/admin/employees/${admin.id}/reset-password`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(resetResponse.status, 200);
+
+    const resetLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employeeId: admin.employeeId, password: 'ResetPass123!' }),
+    });
+    assert.equal(resetLoginResponse.status, 200);
+    const resetLogin = await resetLoginResponse.json() as { token: string; requiresFirstPasswordSetup: boolean };
+    assert.equal(resetLogin.requiresFirstPasswordSetup, true);
+
+    admin.status = 'ACTIVE';
+    const setupResponse = await fetch(`${baseUrl}/api/auth/set-first-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${resetLogin.token}`,
+      },
+      body: JSON.stringify({ employeeId: admin.employeeId, newPassword: 'AdminResetSecure2026!' }),
+    });
+    assert.equal(setupResponse.status, 200);
+
     const demoAccountsResponse = await fetch(`${baseUrl}/api/auth/demo-accounts`);
     assert.equal(demoAccountsResponse.status, 404);
 
