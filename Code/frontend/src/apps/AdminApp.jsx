@@ -25,7 +25,7 @@ const normalizeStoredUser = (user) => {
 };
 
 export default function AdminApp() {
-  const [theme, setTheme] = useState('dark');
+  const [theme, setTheme] = useState('light');
   const [isBooting, setIsBooting] = useState(true);
   const [headerCompact, setHeaderCompact] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
