@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AdminPortal } from '../components/admin/AdminPortal';
 import { WorkerAuthModal } from '../components/auth/WorkerAuthModal';
 import { BrandLogo } from '../components/common/BrandLogo';
+import { AppSidebar } from '../components/common/AppSidebar';
 import { Icon } from '../components/common/Icons';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
@@ -9,6 +10,19 @@ const ADMIN_TOKEN_KEY = 'syncstock_admin_token';
 const ADMIN_USER_KEY = 'syncstock_admin_user';
 const WORKER_TOKEN_KEY = 'syncstock_worker_token';
 const WORKER_USER_KEY = 'syncstock_worker_user';
+
+const normalizeEmployeeId = (value) => {
+  if (typeof value !== 'string') return value;
+  return value.trim().replace(/^EMP-/i, '');
+};
+
+const normalizeStoredUser = (user) => {
+  if (!user) return user;
+  return {
+    ...user,
+    employeeId: normalizeEmployeeId(user.employeeId),
+  };
+};
 
 export default function AdminApp() {
   const [theme, setTheme] = useState('dark');
@@ -18,6 +32,8 @@ export default function AdminApp() {
   const [token, setToken] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [toast, setToast] = useState(null);
+  const [activeNav, setActiveNav] = useState('employees');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type });
@@ -39,11 +55,13 @@ export default function AdminApp() {
       return;
     }
 
-    setCurrentUser(user);
+    const normalizedUser = normalizeStoredUser(user);
+
+    setCurrentUser(normalizedUser);
     setToken(newToken);
     localStorage.setItem(ADMIN_TOKEN_KEY, newToken);
-    localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(user));
-    showToast(`Logged in as ${user.name} (${user.employeeId})`, 'success');
+    localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(normalizedUser));
+    showToast(`Logged in as ${normalizedUser.name} (${normalizedUser.employeeId})`, 'success');
   };
 
   const handleLogout = () => {
@@ -78,13 +96,25 @@ export default function AdminApp() {
     const savedUser = localStorage.getItem(ADMIN_USER_KEY);
     if (savedToken && savedUser) {
       try {
-        const parsedUser = JSON.parse(savedUser);
+        const parsedUser = normalizeStoredUser(JSON.parse(savedUser));
         if (parsedUser.role !== 'ADMIN') {
           clearAdminSession();
           return;
         }
         setToken(savedToken);
         setCurrentUser(parsedUser);
+        localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(parsedUser));
+        fetch(`${API_BASE}/api/admin/platform-status`, { headers: { Authorization: `Bearer ${savedToken}` } })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((status) => {
+            if (!status) return;
+            setCurrentUser((user) => {
+              const refreshed = { ...user, isPlatformAdmin: Boolean(status.isPlatformAdmin) };
+              localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(refreshed));
+              return refreshed;
+            });
+          })
+          .catch(() => {});
       } catch {
         clearAdminSession();
       }
@@ -108,16 +138,15 @@ export default function AdminApp() {
       <header className={`app-header ${headerCompact ? 'is-compact' : ''}`}>
         <div className="app-brand">
           <BrandLogo size={36} variant="admin" />
-          <div>
-            <div className="app-brand-name">SyncStock <span style={{ color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600 }}>Admin</span></div>
-            <div className="app-brand-caption">Employee access / Governance</div>
+          <div className="app-brand-copy">
+            <div className="app-brand-name">SyncStock</div>
+            <div className="app-brand-caption">Admin</div>
           </div>
         </div>
 
         <div className="app-header-actions">
           <button
-            className="btn btn-secondary btn-sm"
-            style={{ padding: '6px', borderRadius: 'var(--radius-md)' }}
+            className="btn btn-secondary btn-sm header-button"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             title="Toggle Dark/Light Mode"
           >
@@ -125,32 +154,18 @@ export default function AdminApp() {
           </button>
 
           {currentUser ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-subtle)', padding: '4px 10px', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)' }}>
-              <div
-                style={{
-                  width: '26px',
-                  height: '26px',
-                  borderRadius: '50%',
-                  background: 'var(--purple)',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                }}
-              >
+            <div className="header-user-card">
+              <div className="header-user-avatar">
                 {currentUser.name ? currentUser.name.charAt(0) : 'A'}
               </div>
-              <div style={{ textAlign: 'left', lineHeight: 1.15 }}>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 700 }}>{currentUser.name}</div>
-                <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                  <span className="form-input-mono">{currentUser.employeeId}</span> - ADMIN
+              <div className="header-user-meta">
+                <div className="header-user-name">{currentUser.name}</div>
+                <div className="header-user-role">
+                  <span className="form-input-mono employee-id-inline">{currentUser.employeeId}</span> · ADMIN
                 </div>
               </div>
               <button
-                className="btn btn-secondary btn-sm"
-                style={{ padding: '3px 6px', fontSize: '0.6875rem' }}
+                className="btn btn-secondary btn-sm header-signout"
                 onClick={handleLogout}
                 title="Sign out"
               >
@@ -158,8 +173,8 @@ export default function AdminApp() {
               </button>
             </div>
           ) : (
-            <button className="btn btn-primary btn-sm" onClick={() => setShowAuthModal(true)}>
-              <Icon name="shield-check" size={14} /> Admin Sign In
+            <button className="btn btn-primary btn-sm header-signin" onClick={() => setShowAuthModal(true)}>
+              <Icon name="shield-check" size={14} /> Sign in
             </button>
           )}
         </div>
@@ -172,28 +187,31 @@ export default function AdminApp() {
         </div>
       )}
 
-      <main className="app-main">
+      <div className="app-layout">
+        {currentUser && <AppSidebar role="ADMIN" platformAdmin={currentUser.isPlatformAdmin} activeItem={activeNav} onNavigate={setActiveNav} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} />}
+        <main className={`app-main ${currentUser ? 'has-sidebar' : ''}`}>
         {currentUser?.role === 'ADMIN' ? (
-          <AdminPortal apiBase={API_BASE} token={token} currentUser={currentUser} onNotify={showToast} onSessionExpired={handleSessionExpired} />
+          <AdminPortal apiBase={API_BASE} token={token} currentUser={currentUser} onNotify={showToast} onSessionExpired={handleSessionExpired} initialTab={activeNav} />
         ) : (
           <div className="welcome-panel admin-welcome">
             <div className="welcome-grid" aria-hidden="true" />
             <div className="welcome-copy">
               <span className="eyebrow"><span className="eyebrow-line" /> Governance and access</span>
-              <h1>Keep every<br /><em>door accountable.</em></h1>
-              <p>Manage employee access, warehouse ownership, and the audit trail behind every operational decision.</p>
+              <h1>Protect the<br /><em>chain of custody.</em></h1>
+              <p>Manage employee access, warehouse ownership, and the audit trail behind every decision that moves stock from receipt to shelf.</p>
               <button className="btn btn-primary btn-lg" onClick={() => setShowAuthModal(true)}>
                 <Icon name="shield-check" size={16} /> Open Admin Login
               </button>
             </div>
             <div className="welcome-signal" aria-hidden="true">
               <span>SECURITY / TIER 1</span>
-              <strong>LOCKED</strong>
+              <strong>MONITORED</strong>
               <i />
             </div>
           </div>
         )}
-      </main>
+        </main>
+      </div>
 
       <WorkerAuthModal
         isOpen={showAuthModal}

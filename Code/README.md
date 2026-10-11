@@ -503,7 +503,7 @@ erDiagram
 
 | Feature | Detail |
 | :--- | :--- |
-| **Dual-identifier login** | Accepts email address, Employee ID (`EMP-XXX-NNN`), or generic `identifier` field — any format works |
+| **Dual-identifier login** | Accepts email address, Employee ID (`XXX-NNN`), or generic `identifier` field — any format works |
 | **First-login password wizard** | New accounts use the `isFirstLogin` flag; a multi-step wizard enforces password-strength rules before granting access |
 | **Password strength rules** | Minimum 8 characters, at least one uppercase, one lowercase, one digit, one symbol — validated client and server side |
 | **Email OTP verification** | A 6-digit code can be sent through optional SMTP and expires after 10 minutes. Codes are also written to backend logs; outstanding verification codes are held in process memory |
@@ -634,7 +634,7 @@ Both the backend API and the Vite dev server start concurrently:
 ### System Administrator
 
 > [!CAUTION]
-> Non-production builds include a demo administrator (`EMP-ADM-001`) in `backend/src/modules/auth/auth.ts`. Production does not seed demo users: for a new production database, set `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` before first start; the first login requires choosing a new password. The admin bootstrap settings are only used when the production database has no users.
+> Non-production builds include a demo administrator (`ADM-001`) in `backend/src/modules/auth/auth.ts`. Production does not seed demo users: for a new production database, set `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` before first start; the first login requires choosing a new password. The admin bootstrap settings are only used when the production database has no users.
 
 Admin portal: `http://localhost:5175/admin.html`.
 
@@ -642,11 +642,11 @@ The Administrator can create all other staff accounts (Managers, Cashiers, Wareh
 
 | Role | Employee ID Prefix | Example |
 | :--- | :--- | :--- |
-| Administrator | `EMP-ADM-` | `EMP-ADM-001` |
-| Manager | `EMP-MGR-` | `EMP-MGR-001` |
-| Cashier | `EMP-CSH-` | `EMP-CSH-001` |
-| Warehouse Staff | `EMP-WRH-` | `EMP-WRH-001` |
-| Procurement Staff | `EMP-PRC-` | `EMP-PRC-001` |
+| Administrator | `ADM-` | `ADM-001` |
+| Manager | `MGR-` | `MGR-001` |
+| Cashier | `CSH-` | `CSH-001` |
+| Warehouse Staff | `WRH-` | `WRH-001` |
+| Procurement Staff | `PRC-` | `PRC-001` |
 
 ---
 

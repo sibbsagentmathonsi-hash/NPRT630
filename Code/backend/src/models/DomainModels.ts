@@ -1,6 +1,55 @@
 import { DataTypes, Model, Optional } from 'sequelize';
 import { sequelize } from '../config/sequelize';
 
+export interface CompanyAttributes {
+  id: string;
+  legalName: string;
+  tradingName: string;
+  registrationNumber?: string;
+  taxNumber?: string;
+  currency: string;
+  timezone: string;
+  subscriptionStatus: string;
+}
+
+export class CompanyModel extends Model<CompanyAttributes> implements CompanyAttributes {
+  declare id: string;
+  declare legalName: string;
+  declare tradingName: string;
+  declare registrationNumber?: string;
+  declare taxNumber?: string;
+  declare currency: string;
+  declare timezone: string;
+  declare subscriptionStatus: string;
+}
+
+export class CompanyPolicyModel extends Model {
+  declare companyId: string;
+  declare configuration: object;
+}
+
+CompanyPolicyModel.init(
+  {
+    companyId: { type: DataTypes.STRING(80), primaryKey: true },
+    configuration: { type: DataTypes.JSONB, allowNull: false },
+  },
+  { sequelize, tableName: 'company_policies', timestamps: true }
+);
+
+CompanyModel.init(
+  {
+    id: { type: DataTypes.STRING(80), primaryKey: true },
+    legalName: { type: DataTypes.STRING(200), allowNull: false },
+    tradingName: { type: DataTypes.STRING(150), allowNull: false },
+    registrationNumber: { type: DataTypes.STRING(100), allowNull: true },
+    taxNumber: { type: DataTypes.STRING(100), allowNull: true },
+    currency: { type: DataTypes.STRING(3), allowNull: false, defaultValue: 'ZAR' },
+    timezone: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'Africa/Johannesburg' },
+    subscriptionStatus: { type: DataTypes.STRING(30), allowNull: false, defaultValue: 'ACTIVE' },
+  },
+  { sequelize, tableName: 'companies', timestamps: true }
+);
+
 export type UserRoleName = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAREHOUSE_STAFF' | 'PROCUREMENT_STAFF';
 
 class RoleModel extends Model {
@@ -18,6 +67,8 @@ RoleModel.init(
 
 export interface UserAttributes {
   id: number;
+  companyId: string;
+  isPlatformAdmin: boolean;
   employeeId: string;
   name: string;
   email: string;
@@ -34,6 +85,8 @@ export interface UserAttributes {
 
 class UserModel extends Model<UserAttributes, Optional<UserAttributes, 'id' | 'lastLoginAt'>> implements UserAttributes {
   declare id: number;
+  declare companyId: string;
+  declare isPlatformAdmin: boolean;
   declare employeeId: string;
   declare name: string;
   declare email: string;
@@ -50,9 +103,11 @@ class UserModel extends Model<UserAttributes, Optional<UserAttributes, 'id' | 'l
 UserModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    employeeId: { type: DataTypes.STRING(40), allowNull: false, unique: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
+    isPlatformAdmin: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    employeeId: { type: DataTypes.STRING(40), allowNull: false },
     name: { type: DataTypes.STRING(150), allowNull: false },
-    email: { type: DataTypes.STRING(254), allowNull: false, unique: true },
+    email: { type: DataTypes.STRING(254), allowNull: false },
     role: { type: DataTypes.STRING(40), allowNull: false },
     sector: { type: DataTypes.STRING(100), allowNull: false },
     status: { type: DataTypes.STRING(30), allowNull: false },
@@ -63,11 +118,12 @@ UserModel.init(
     passwordHash: { type: DataTypes.STRING(255), allowNull: false },
     lastLoginAt: { type: DataTypes.DATE, allowNull: true },
   },
-  { sequelize, tableName: 'users', timestamps: true }
+  { sequelize, tableName: 'users', timestamps: true, indexes: [{ unique: true, fields: ['companyId', 'employeeId'] }, { unique: true, fields: ['companyId', 'email'] }] }
 );
 
 class AuditLogModel extends Model {
   declare id: string;
+  declare companyId?: string;
   declare timestamp: Date;
   declare actor: string;
   declare actorRole: string;
@@ -81,6 +137,7 @@ class AuditLogModel extends Model {
 AuditLogModel.init(
   {
     id: { type: DataTypes.STRING(60), primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     timestamp: { type: DataTypes.DATE, allowNull: false },
     actor: { type: DataTypes.STRING(150), allowNull: false },
     actorRole: { type: DataTypes.STRING(40), allowNull: false },
@@ -95,6 +152,7 @@ AuditLogModel.init(
 
 class WarehouseModel extends Model {
   declare id: string;
+  declare companyId?: string;
   declare name: string;
   declare city: string;
   declare binsCount: number;
@@ -107,6 +165,7 @@ class WarehouseModel extends Model {
 WarehouseModel.init(
   {
     id: { type: DataTypes.STRING(30), primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     name: { type: DataTypes.STRING(150), allowNull: false },
     city: { type: DataTypes.STRING(120), allowNull: false },
     binsCount: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -120,6 +179,7 @@ WarehouseModel.init(
 
 class InventoryItemModel extends Model {
   declare id: string;
+  declare companyId?: string;
   declare productId: number;
   declare warehouseId: string;
   declare binCode: string;
@@ -131,6 +191,7 @@ class InventoryItemModel extends Model {
 InventoryItemModel.init(
   {
     id: { type: DataTypes.STRING(200), primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     productId: { type: DataTypes.INTEGER, allowNull: false },
     warehouseId: { type: DataTypes.STRING(30), allowNull: false },
     binCode: { type: DataTypes.STRING(40), allowNull: false },
@@ -148,6 +209,7 @@ InventoryItemModel.init(
 
 class CycleCountModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare auditNumber: string;
   declare warehouseId: string;
   declare binCode: string;
@@ -161,6 +223,7 @@ class CycleCountModel extends Model {
 CycleCountModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     auditNumber: { type: DataTypes.STRING(50), allowNull: false, unique: true },
     warehouseId: { type: DataTypes.STRING(30), allowNull: false },
     binCode: { type: DataTypes.STRING(40), allowNull: false },
@@ -175,6 +238,7 @@ CycleCountModel.init(
 
 class SaleModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare receiptNumber: string;
   declare subtotal: number;
   declare vatAmount: number;
@@ -192,6 +256,7 @@ class SaleModel extends Model {
 SaleModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     receiptNumber: { type: DataTypes.STRING(50), allowNull: false, unique: true },
     subtotal: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
     vatAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
@@ -210,6 +275,7 @@ SaleModel.init(
 
 class SaleItemModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare saleId: number;
   declare productId: number;
   declare sku: string;
@@ -222,6 +288,7 @@ class SaleItemModel extends Model {
 SaleItemModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     saleId: { type: DataTypes.INTEGER, allowNull: false },
     productId: { type: DataTypes.INTEGER, allowNull: false },
     sku: { type: DataTypes.STRING(50), allowNull: false },
@@ -235,6 +302,7 @@ SaleItemModel.init(
 
 class ReturnModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare returnNumber: string;
   declare receiptNumber?: string;
   declare refundAmount: number;
@@ -246,6 +314,7 @@ class ReturnModel extends Model {
 ReturnModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     returnNumber: { type: DataTypes.STRING(50), allowNull: false, unique: true },
     receiptNumber: { type: DataTypes.STRING(50), allowNull: true },
     refundAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
@@ -258,6 +327,7 @@ ReturnModel.init(
 
 class ReturnItemModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare returnId: number;
   declare productId: number;
   declare sku: string;
@@ -268,6 +338,7 @@ class ReturnItemModel extends Model {
 ReturnItemModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     returnId: { type: DataTypes.INTEGER, allowNull: false },
     productId: { type: DataTypes.INTEGER, allowNull: false },
     sku: { type: DataTypes.STRING(50), allowNull: false },
@@ -279,6 +350,7 @@ ReturnItemModel.init(
 
 class PurchaseOrderModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare supplierId: number;
   declare status: string;
   declare totalQuantity: number;
@@ -292,6 +364,7 @@ class PurchaseOrderModel extends Model {
 PurchaseOrderModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     supplierId: { type: DataTypes.INTEGER, allowNull: false },
     status: { type: DataTypes.STRING(30), allowNull: false },
     totalQuantity: { type: DataTypes.INTEGER, allowNull: false },
@@ -306,6 +379,7 @@ PurchaseOrderModel.init(
 
 class PurchaseOrderItemModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare purchaseOrderId: number;
   declare productId?: number;
   declare sku: string;
@@ -317,6 +391,7 @@ class PurchaseOrderItemModel extends Model {
 PurchaseOrderItemModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     purchaseOrderId: { type: DataTypes.INTEGER, allowNull: false },
     productId: { type: DataTypes.INTEGER, allowNull: true },
     sku: { type: DataTypes.STRING(50), allowNull: false },
@@ -329,6 +404,7 @@ PurchaseOrderItemModel.init(
 
 class InventoryReservationModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare customerOrderId: number;
   declare productId: number;
   declare quantity: number;
@@ -338,6 +414,7 @@ class InventoryReservationModel extends Model {
 InventoryReservationModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     customerOrderId: { type: DataTypes.INTEGER, allowNull: false },
     productId: { type: DataTypes.INTEGER, allowNull: false },
     quantity: { type: DataTypes.INTEGER, allowNull: false },
@@ -348,6 +425,7 @@ InventoryReservationModel.init(
 
 class CustomerOrderModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare orderNumber: string;
   declare customerName: string;
   declare status: string;
@@ -359,6 +437,7 @@ class CustomerOrderModel extends Model {
 CustomerOrderModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     orderNumber: { type: DataTypes.STRING(50), allowNull: false, unique: true },
     customerName: { type: DataTypes.STRING(150), allowNull: false },
     status: { type: DataTypes.STRING(30), allowNull: false },
@@ -371,6 +450,7 @@ CustomerOrderModel.init(
 
 class CustomerOrderItemModel extends Model {
   declare id: number;
+  declare companyId?: string;
   declare customerOrderId: number;
   declare productId: number;
   declare sku: string;
@@ -383,6 +463,7 @@ class CustomerOrderItemModel extends Model {
 CustomerOrderItemModel.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     customerOrderId: { type: DataTypes.INTEGER, allowNull: false },
     productId: { type: DataTypes.INTEGER, allowNull: false },
     sku: { type: DataTypes.STRING(50), allowNull: false },

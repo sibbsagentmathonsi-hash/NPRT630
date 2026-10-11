@@ -4,10 +4,23 @@ import nodemailer from 'nodemailer';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { generateSecret, generateURI, verifySync } from 'otplib';
+import { getCurrentPolicy, isPolicyEnforced } from '../../config/policies';
+import { DEFAULT_COMPANY_ID, currentCompanyId } from '../../config/tenancy';
 
 dotenv.config();
 
 export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAREHOUSE_STAFF' | 'PROCUREMENT_STAFF';
+
+export const permissionsForRole = (role: UserRole): string[] => {
+  const permissions: Record<UserRole, string[]> = {
+    ADMIN: ['company:read', 'company:manage', 'users:manage', 'policies:manage', 'inventory:manage', 'reports:read'],
+    MANAGER: ['inventory:read', 'inventory:manage', 'sales:manage', 'procurement:manage', 'reports:read'],
+    CASHIER: ['sales:manage', 'returns:manage'],
+    WAREHOUSE_STAFF: ['inventory:read', 'inventory:manage', 'receiving:manage'],
+    PROCUREMENT_STAFF: ['inventory:read', 'procurement:manage'],
+  };
+  return permissions[role] ?? [];
+};
 
 export type EmployeeSector =
   | 'Store Management'
@@ -20,6 +33,8 @@ export type UserStatus = 'ACTIVE' | 'PENDING_SETUP' | 'SUSPENDED' | 'DEACTIVATED
 
 export type User = {
   id: number;
+  companyId: string;
+  isPlatformAdmin: boolean;
   employeeId: string;
   name: string;
   email: string;
@@ -40,6 +55,7 @@ export type PublicUser = Omit<User, 'password' | 'passwordHash' | 'mfaSecret'>;
 
 export type SecurityAuditLog = {
   id: string;
+  companyId?: string;
   timestamp: string;
   actor: string;
   actorRole: string;
@@ -68,7 +84,7 @@ export const securityAuditLogs: SecurityAuditLog[] = [
     actor: 'admin@retail.local',
     actorRole: 'ADMIN',
     eventType: 'USER_REGISTERED',
-    targetUserId: 'EMP-CSH-201',
+    targetUserId: 'CSH-201',
     details: 'Registered Cashier Thandi Molefe in Cashier & Front-of-House sector',
     status: 'SUCCESS',
   },
@@ -78,7 +94,7 @@ export const securityAuditLogs: SecurityAuditLog[] = [
     actor: 'admin@retail.local',
     actorRole: 'ADMIN',
     eventType: 'USER_REGISTERED',
-    targetUserId: 'EMP-NEW-501',
+    targetUserId: 'NEW-501',
     details: 'Provisioned new employee account for Kego Ikaneng with PENDING_SETUP status',
     status: 'SUCCESS',
   },
@@ -100,6 +116,7 @@ export const logSecurityEvent = (
 ): SecurityAuditLog => {
   const newLog: SecurityAuditLog = {
     id: `SEC-LOG-${randomUUID()}`,
+    companyId: currentCompanyId(),
     timestamp: new Date().toISOString(),
     actor,
     actorRole,
@@ -117,7 +134,9 @@ export const logSecurityEvent = (
 export const users: User[] = process.env.NODE_ENV === 'production' ? [] : [
   {
     id: 1,
-    employeeId: 'EMP-ADM-001',
+    companyId: DEFAULT_COMPANY_ID,
+    isPlatformAdmin: true,
+    employeeId: 'ADM-001',
     name: 'Sibusiso Mathonsi',
     email: 'sibbs.agentmathonsi@gmail.com',
     role: 'ADMIN',
@@ -128,7 +147,7 @@ export const users: User[] = process.env.NODE_ENV === 'production' ? [] : [
     emailVerified: true,
     createdAt: '2026-01-01T08:00:00.000Z',
     lastLoginAt: new Date().toISOString(),
-    password: '@Arg3nt2003',
+    password: process.env.ADMIN_PASSWORD || '@Arg3nt2003',
   },
 ];
 
@@ -136,6 +155,8 @@ export const hydrateUsers = (storedUsers: Array<Record<string, any>>): void => {
   if (storedUsers.length === 0) return;
   users.splice(0, users.length, ...storedUsers.map((stored) => ({
     id: Number(stored.id),
+    companyId: String(stored.companyId ?? DEFAULT_COMPANY_ID),
+    isPlatformAdmin: Boolean(stored.isPlatformAdmin),
     employeeId: String(stored.employeeId),
     name: String(stored.name),
     email: String(stored.email),
@@ -187,6 +208,9 @@ export const generateToken = (user: PublicUser): string => {
   return jwt.sign(
     {
       id: user.id,
+      companyId: user.companyId,
+      isPlatformAdmin: user.isPlatformAdmin,
+      permissions: permissionsForRole(user.role),
       employeeId: user.employeeId,
       email: user.email,
       name: user.name,
@@ -197,7 +221,7 @@ export const generateToken = (user: PublicUser): string => {
     },
     getJwtSecret(),
     {
-      expiresIn: '8h',
+      expiresIn: `${getCurrentPolicy(user.companyId).sessionDurationHours}h`,
     }
   );
 };
@@ -205,6 +229,9 @@ export const generateToken = (user: PublicUser): string => {
 export const verifyToken = (token: string) => {
   return jwt.verify(token, getJwtSecret()) as {
     id: number;
+    companyId: string;
+    isPlatformAdmin: boolean;
+    permissions: string[];
     employeeId: string;
     email: string;
     name: string;
@@ -237,10 +264,11 @@ export const verifyMfa = (identifier: string, code: string): User | undefined =>
 
 export const authenticateUser = (
   identifier: string,
-  passwordAttempt: string
+  passwordAttempt: string,
+  companyId?: string
 ): User | undefined => {
   const clean = identifier.trim().toLowerCase();
-  const user = users.find((u) => u.employeeId.toLowerCase() === clean || u.email.toLowerCase() === clean);
+  const user = users.find((u) => (!companyId || u.companyId === companyId) && (u.employeeId.toLowerCase() === clean || u.email.toLowerCase() === clean));
 
   const passwordMatches = user?.passwordHash
     ? bcrypt.compareSync(passwordAttempt, user.passwordHash)
@@ -275,19 +303,19 @@ export const hasPermission = (userRole: UserRole, requiredRole: UserRole): boole
 
 export const validatePasswordStrength = (password: string): { isValid: boolean; errors: string[] } => {
   const errors: string[] = [];
-  if (!password || password.length < 8) {
-    errors.push('Password must be at least 8 characters long');
+  if (!password || password.length < getCurrentPolicy().password.minimumLength) {
+    errors.push(`Password must be at least ${getCurrentPolicy().password.minimumLength} characters long`);
   }
-  if (!/[A-Z]/.test(password)) {
+  if (getCurrentPolicy().password.requireUppercase && !/[A-Z]/.test(password)) {
     errors.push('Password must contain at least one uppercase letter');
   }
-  if (!/[a-z]/.test(password)) {
+  if (getCurrentPolicy().password.requireLowercase && !/[a-z]/.test(password)) {
     errors.push('Password must contain at least one lowercase letter');
   }
-  if (!/[0-9]/.test(password)) {
+  if (getCurrentPolicy().password.requireNumber && !/[0-9]/.test(password)) {
     errors.push('Password must contain at least one numerical digit');
   }
-  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+  if (getCurrentPolicy().password.requireSpecial && !/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
     errors.push('Password must contain at least one special symbol (!@#$%^&*)');
   }
   return {
@@ -298,14 +326,14 @@ export const validatePasswordStrength = (password: string): { isValid: boolean; 
 
 export const generateEmployeeId = (sector: EmployeeSector): string => {
   const prefixMap: Record<EmployeeSector, string> = {
-    'Store Management': 'EMP-MGR',
-    'Cashier & Front-of-House': 'EMP-CSH',
-    'Warehouse & Logistics': 'EMP-WRH',
-    'Procurement & Supply Chain': 'EMP-PRC',
-    'System Administration': 'EMP-ADM',
+    'Store Management': 'MGR',
+    'Cashier & Front-of-House': 'CSH',
+    'Warehouse & Logistics': 'WRH',
+    'Procurement & Supply Chain': 'PRC',
+    'System Administration': 'ADM',
   };
 
-  const prefix = prefixMap[sector] || 'EMP-STF';
+  const prefix = prefixMap[sector] || 'STF';
   const sectorCount = users.filter((u) => u.sector === sector).length + 1;
   return `${prefix}-${String(sectorCount).padStart(3, '0')}`;
 };
@@ -317,8 +345,10 @@ export const registerEmployee = (params: {
   sector: EmployeeSector;
   tempPassword?: string;
   adminActor?: string;
+  companyId?: string;
 }): { success: boolean; user: PublicUser; generatedPassword: string; error?: string } => {
-  const existing = users.find((u) => u.email.toLowerCase() === params.email.toLowerCase());
+  const companyId = params.companyId ?? DEFAULT_COMPANY_ID;
+  const existing = users.find((u) => u.companyId === companyId && u.email.toLowerCase() === params.email.toLowerCase());
   if (existing) {
     throw new Error(`An employee with email ${params.email} already exists`);
   }
@@ -328,13 +358,15 @@ export const registerEmployee = (params: {
 
   const newUser: User = {
     id: users.length + 1,
+    companyId,
+    isPlatformAdmin: false,
     employeeId,
     name: params.name.trim(),
     email: params.email.trim().toLowerCase(),
     role: params.role,
     sector: params.sector,
-    status: 'PENDING_SETUP',
-    isFirstLogin: true,
+    status: getCurrentPolicy(companyId).password.firstLoginChangeRequired && isPolicyEnforced('first-login-password', companyId) ? 'PENDING_SETUP' : 'ACTIVE',
+    isFirstLogin: getCurrentPolicy(companyId).password.firstLoginChangeRequired && isPolicyEnforced('first-login-password', companyId),
     mfaEnabled: false,
     emailVerified: false,
     createdAt: new Date().toISOString(),
@@ -346,7 +378,7 @@ export const registerEmployee = (params: {
     'USER_REGISTERED',
     params.adminActor || 'admin',
     'ADMIN',
-    `Registered new employee ${newUser.name} (${newUser.employeeId}) in ${newUser.sector} with PENDING_SETUP`,
+    `Registered new employee ${newUser.name} (${newUser.employeeId}) in ${newUser.sector} with ${newUser.status}`,
     newUser.employeeId
   );
 

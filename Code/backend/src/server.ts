@@ -20,7 +20,8 @@ import {
   getInventoryItems,
   getLowStockProducts,
   getProductSnapshots,
-  products,
+  findProductBySku,
+  findProductById,
   recordCycleCount,
   releaseReservedOrder,
   salesReceipts,
@@ -29,6 +30,7 @@ import {
   type ReturnReason,
 } from './inventory';
 import { connectDatabase } from './config/database';
+import { CompanyModel } from './models/DomainModels';
 import {
   authenticateUser,
   demoAccounts,
@@ -49,6 +51,7 @@ import {
   type EmployeeSector,
   type UserRole,
   verifyToken,
+  permissionsForRole,
 } from './modules/auth/auth';
 import {
   approvePurchaseOrder,
@@ -62,6 +65,8 @@ import {
   suppliers,
 } from './modules/procurement/procurement';
 import { calculateForecast, calculateForecasts } from './modules/forecasting/forecasting';
+import { getCurrentPolicy, isPolicyEnforced, updateSystemPolicy } from './config/policies';
+import { belongsToCompany, companies, createCompany, getCompany, runInCompany } from './config/tenancy';
 import { authorizeElectronicPayment, refundElectronicPayment, voidElectronicPayment, type ElectronicPaymentMethod } from './modules/integrations/contracts';
 import { getRequestMetrics, requestMetricsMiddleware } from './observability';
 import {
@@ -85,6 +90,7 @@ import {
   persistUserVerification,
   isDatabaseReady,
   setDatabaseReady,
+  persistCompanyPolicy,
 } from './persistence';
 
 dotenv.config();
@@ -106,9 +112,23 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(requestMetricsMiddleware);
+app.use((req: any, _res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return next();
+  try {
+    const payload = verifyToken(token) as TokenPayload;
+    return runInCompany(payload.companyId, next);
+  } catch {
+    return next();
+  }
+});
 
 type TokenPayload = {
   id: number;
+  companyId: string;
+  isPlatformAdmin: boolean;
+  permissions: string[];
   employeeId: string;
   email: string;
   name: string;
@@ -140,11 +160,17 @@ const authorize = (...allowedRoles: UserRole[]) => (req: any, res: any, next: an
   try {
     const payload = verifyToken(token) as TokenPayload;
 
+    if (!payload.companyId || !getCompany(payload.companyId) || getCompany(payload.companyId)?.subscriptionStatus !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Company access is inactive or unavailable' });
+    }
+    payload.permissions = payload.permissions?.length ? payload.permissions : permissionsForRole(payload.role);
+
     if (!roleCanAccess(payload.role, allowedRoles)) {
       return res.status(403).json({ error: 'Insufficient permissions for this operation' });
     }
 
     req.user = payload;
+    req.companyId = payload.companyId;
     return next();
   } catch {
     return res.status(401).json({ error: 'Invalid or expired session token' });
@@ -152,6 +178,13 @@ const authorize = (...allowedRoles: UserRole[]) => (req: any, res: any, next: an
 };
 
 const actorName = (req: any): string => req.user?.name ?? req.user?.email ?? 'System';
+
+const authorizePlatformAdmin = (req: any, res: any, next: any) => authorize('ADMIN')(req, res, () => {
+  const account = users.find((user) => user.id === req.user.id && user.companyId === req.user.companyId);
+  if (!account?.isPlatformAdmin) return res.status(403).json({ error: 'Platform administrator access is required' });
+  req.user.isPlatformAdmin = true;
+  return next();
+});
 
 const handleDomainError = (res: any, error: unknown, fallback: string): any => {
   const message = error instanceof Error ? error.message : fallback;
@@ -177,17 +210,20 @@ const toSaleItems = (body: any) => {
 const inventoryPayload = () => ({
   products: getProductSnapshots(),
   categories,
+  vatRate: getCurrentPolicy().vatRate,
+  policyControls: getCurrentPolicy().controls,
   summary: getDashboardSummary(),
   lowStockProducts: getLowStockProducts(),
-  movements: stockMovements.slice(0, 50),
-  receipts: salesReceipts.slice(0, 30),
-  cycleCounts: cycleCounts.slice(0, 20),
+  movements: stockMovements.filter((movement) => belongsToCompany(movement.companyId)).slice(0, 50),
+  receipts: salesReceipts.filter((receipt) => belongsToCompany(receipt.companyId)).slice(0, 30),
+  cycleCounts: cycleCounts.filter((count) => belongsToCompany(count.companyId)).slice(0, 20),
 });
 
-const workspacePayload = (role: UserRole) => {
+const workspacePayload = async (role: UserRole) => {
   const base = {
     ...inventoryPayload(),
-    orders: customerOrders,
+    orders: customerOrders.filter((order) => belongsToCompany(order.companyId)),
+    warehouses: await getWarehouses(),
   };
 
   if (role === 'CASHIER') {
@@ -259,16 +295,44 @@ app.get('/api/auth/demo-accounts', (_req, res) => {
 // 2. AUTHENTICATION & ONBOARDING
 // ==========================================
 
+// Email-first access check. Only a safe public account summary is returned.
+app.post('/api/auth/lookup-email', (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const requestedCompanyId = req.body?.companyId ? String(req.body.companyId) : undefined;
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ error: 'A valid email address is required' });
+  }
+
+  const configuredAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const matches = users.filter((entry) => (
+    (entry.email.toLowerCase() === email
+      || (configuredAdminEmail === email && entry.employeeId === 'ADM-001' && entry.role === 'ADMIN'))
+    && (!requestedCompanyId || entry.companyId === requestedCompanyId)
+  ));
+  if (matches.length === 0) {
+    return res.status(404).json({ error: 'No SyncStock account was found for that email address' });
+  }
+  if (matches.length > 1) return res.status(409).json({ error: 'This email belongs to multiple companies. Select a company before continuing.', companies: matches.map((entry) => getCompany(entry.companyId)).filter(Boolean) });
+  const user = matches[0];
+
+  return res.json({ user: toPublicUser(user) });
+});
+
+app.get('/api/auth/policy', (req, res) => {
+  const companyId = req.query.companyId ? String(req.query.companyId) : undefined;
+  res.json({ password: getCurrentPolicy(companyId).password, sessionDurationHours: getCurrentPolicy(companyId).sessionDurationHours });
+});
+
 // Universal & Worker Login (accepts Employee ID or Email)
 app.post('/api/auth/login', (req, res) => {
-  const { email, employeeId, identifier: rawId, password } = req.body ?? {};
+  const { email, employeeId, identifier: rawId, password, companyId } = req.body ?? {};
   const identifier = employeeId || email || rawId;
 
   if (!identifier || !password) {
     return res.status(400).json({ error: 'Employee ID (or Email) and password are required' });
   }
 
-  const user = authenticateUser(String(identifier), String(password));
+  const user = authenticateUser(String(identifier), String(password), companyId ? String(companyId) : undefined);
 
   if (!user) {
     logSecurityEvent('USER_LOGIN', String(identifier), 'GUEST', 'Failed login attempt with incorrect credentials', identifier, 'FAILURE');
@@ -437,6 +501,7 @@ app.post('/api/admin/employees', authorize('ADMIN'), async (req: any, res) => {
     sector: sector as EmployeeSector,
     tempPassword: tempPassword ? String(tempPassword) : undefined,
     adminActor: req.user.email,
+    companyId: req.user.companyId,
   });
 
   if (!result.success || !result.user) {
@@ -448,19 +513,78 @@ app.post('/api/admin/employees', authorize('ADMIN'), async (req: any, res) => {
   return res.status(201).json({
     message: `Employee registered successfully with ID: ${result.user.employeeId}`,
     user: result.user,
-    employees: demoAccounts(),
+    employees: demoAccounts().filter((employee) => employee.companyId === req.user.companyId),
   });
 });
 
 // List all Employees with Sectors
-app.get('/api/admin/employees', authorize('ADMIN'), (_req, res) => {
-  res.json({ employees: demoAccounts() });
+app.get('/api/admin/employees', authorize('ADMIN'), (req: any, res) => {
+  res.json({ employees: demoAccounts().filter((employee) => employee.companyId === req.user.companyId) });
+});
+
+app.get('/api/admin/company', authorize('ADMIN'), (req: any, res) => {
+  const company = getCompany(req.user.companyId);
+  if (!company) return res.status(404).json({ error: 'Company not found' });
+  return res.json({ company });
+});
+
+app.get('/api/admin/platform-status', authorize('ADMIN'), (req: any, res) => {
+  const account = users.find((user) => user.id === req.user.id && user.companyId === req.user.companyId);
+  return res.json({ isPlatformAdmin: Boolean(account?.isPlatformAdmin) });
+});
+
+app.get('/api/platform/companies', authorizePlatformAdmin, (_req, res) => {
+  return res.json({ companies });
+});
+
+app.patch('/api/admin/company', authorize('ADMIN'), (req: any, res) => {
+  const company = getCompany(req.user.companyId);
+  if (!company) return res.status(404).json({ error: 'Company not found' });
+  for (const key of ['legalName', 'tradingName', 'registrationNumber', 'taxNumber', 'currency', 'timezone']) {
+    if (req.body?.[key] !== undefined) (company as any)[key] = String(req.body[key]).trim();
+  }
+  const persist = isDatabaseReady()
+    ? CompanyModel.update(company as any, { where: { id: company.id } })
+    : Promise.resolve();
+  return persist.then(() => res.json({ message: 'Company profile updated', company }));
+});
+
+app.post('/api/platform/companies', authorizePlatformAdmin, async (req: any, res) => {
+  const legalName = String(req.body?.legalName ?? '').trim();
+  const tradingName = String(req.body?.tradingName ?? '').trim();
+  if (!legalName || !tradingName) return res.status(400).json({ error: 'legalName and tradingName are required' });
+  const company = createCompany({
+    legalName,
+    tradingName,
+    registrationNumber: req.body?.registrationNumber ? String(req.body.registrationNumber) : undefined,
+    taxNumber: req.body?.taxNumber ? String(req.body.taxNumber) : undefined,
+    currency: String(req.body?.currency ?? 'ZAR'),
+    timezone: String(req.body?.timezone ?? 'Africa/Johannesburg'),
+  });
+  if (isDatabaseReady()) await CompanyModel.create(company as any);
+  return res.status(201).json({ message: 'Company created', company, companies });
+});
+
+app.post('/api/platform/companies/:companyId/admin', authorizePlatformAdmin, async (req: any, res) => {
+  const company = getCompany(req.params.companyId);
+  if (!company) return res.status(404).json({ error: 'Company not found' });
+  const result = registerEmployee({
+    name: String(req.body?.name ?? ''),
+    email: String(req.body?.email ?? ''),
+    role: 'ADMIN',
+    sector: 'System Administration',
+    tempPassword: req.body?.tempPassword ? String(req.body.tempPassword) : undefined,
+    adminActor: req.user.email,
+    companyId: company.id,
+  });
+  await persistUser(result.user, await bcrypt.hash(result.generatedPassword, 12));
+  return res.status(201).json({ message: 'Company administrator created', company, user: result.user, temporaryPassword: result.generatedPassword });
 });
 
 // Update Employee Role / Status / Sector
 app.patch('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
-  const target = users.find((u) => u.id === userId);
+  const target = users.find((u) => u.id === userId && u.companyId === req.user.companyId);
 
   if (!target) {
     return res.status(404).json({ error: 'Employee not found' });
@@ -483,13 +607,13 @@ app.patch('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res) 
   return res.json({
     message: 'Employee updated successfully',
     user: toPublicUser(target),
-    employees: demoAccounts(),
+    employees: demoAccounts().filter((employee) => employee.companyId === req.user.companyId),
   });
 });
 
 app.delete('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
-  const target = users.find((u) => u.id === userId);
+  const target = users.find((u) => u.id === userId && u.companyId === req.user.companyId);
   if (!target) return res.status(404).json({ error: 'Employee not found' });
   if (target.role === 'ADMIN') return res.status(400).json({ error: 'Administrator accounts cannot be deleted' });
 
@@ -497,13 +621,13 @@ app.delete('/api/admin/employees/:id', authorize('ADMIN'), async (req: any, res)
   users.splice(index, 1);
   await removeUser(userId);
   logSecurityEvent('USER_STATUS_UPDATED', req.user.email, 'ADMIN', `Deleted employee ${target.name} (${target.employeeId})`, target.employeeId);
-  return res.json({ message: 'Employee deleted successfully', employees: demoAccounts() });
+  return res.json({ message: 'Employee deleted successfully', employees: demoAccounts().filter((employee) => employee.companyId === req.user.companyId) });
 });
 
 // Reset Password / MFA for Employee
 app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
-  const target = users.find((u) => u.id === userId);
+  const target = users.find((u) => u.id === userId && u.companyId === req.user.companyId);
 
   if (!target) {
     return res.status(404).json({ error: 'Employee not found' });
@@ -533,7 +657,7 @@ app.post('/api/admin/employees/:id/reset-password', authorize('ADMIN'), async (r
 
 app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), async (req: any, res) => {
   const userId = Number(req.params.id);
-  const target = users.find((u) => u.id === userId);
+  const target = users.find((u) => u.id === userId && u.companyId === req.user.companyId);
 
   if (!target) {
     return res.status(404).json({ error: 'Employee not found' });
@@ -559,7 +683,47 @@ app.post('/api/admin/employees/:id/reset-mfa', authorize('ADMIN'), async (req: a
 // Security Audit Logs Viewer
 app.get('/api/admin/audit-logs', authorize('ADMIN'), async (_req, res) => {
   const persistedLogs = await getPersistedAuditLogs();
-  res.json({ logs: persistedLogs.length > 0 ? persistedLogs : securityAuditLogs });
+  const logs = persistedLogs.length > 0 ? persistedLogs : securityAuditLogs;
+  res.json({ logs: logs.filter((log: any) => belongsToCompany(log.companyId)) });
+});
+
+app.get('/api/admin/policies', authorize('ADMIN'), (_req, res) => {
+  res.json({ policy: getCurrentPolicy() });
+});
+
+app.patch('/api/admin/policies', authorize('ADMIN'), async (req: any, res) => {
+  const allowed = ['owner', 'reviewDate', 'currency', 'vatRate', 'sessionDurationHours', 'tlsStatus', 'password', 'controls'];
+  const changes: any = {};
+  for (const key of allowed) if (req.body?.[key] !== undefined) changes[key] = req.body[key];
+  if (changes.vatRate !== undefined && (!Number.isFinite(Number(changes.vatRate)) || Number(changes.vatRate) < 0 || Number(changes.vatRate) > 100)) {
+    return res.status(400).json({ error: 'VAT rate must be between 0 and 100' });
+  }
+  if (changes.sessionDurationHours !== undefined && (!Number.isInteger(Number(changes.sessionDurationHours)) || Number(changes.sessionDurationHours) < 1 || Number(changes.sessionDurationHours) > 24)) {
+    return res.status(400).json({ error: 'Session duration must be a whole number between 1 and 24 hours' });
+  }
+  if (changes.tlsStatus !== undefined && !['CONFIGURED', 'REQUIRES_DEPLOYMENT'].includes(changes.tlsStatus)) {
+    return res.status(400).json({ error: 'TLS status is invalid' });
+  }
+  if (changes.password !== undefined) {
+    const password = changes.password;
+    if (!password || typeof password !== 'object' || !Number.isInteger(Number(password.minimumLength)) || Number(password.minimumLength) < 6 || Number(password.minimumLength) > 64) {
+      return res.status(400).json({ error: 'Password minimum length must be a whole number between 6 and 64' });
+    }
+    const passwordFlags = ['requireUppercase', 'requireLowercase', 'requireNumber', 'requireSpecial', 'firstLoginChangeRequired'];
+    if (passwordFlags.some((key) => typeof password[key] !== 'boolean')) {
+      return res.status(400).json({ error: 'Password requirements must be boolean values' });
+    }
+  }
+  if (changes.controls !== undefined) {
+    const validStatuses = ['ENFORCED', 'RECOMMENDED', 'REQUIRES_DEPLOYMENT', 'DISABLED'];
+    if (!Array.isArray(changes.controls) || changes.controls.some((control: any) => !control?.id || !validStatuses.includes(control.status))) {
+      return res.status(400).json({ error: 'Each policy control must have a valid status' });
+    }
+  }
+  const policy = updateSystemPolicy(changes, req.user?.email || 'admin');
+  await persistCompanyPolicy(req.user.companyId, policy);
+  logSecurityEvent('USER_ROLE_UPDATED', req.user?.email || 'admin', 'ADMIN', `Policy version ${policy.version} updated`, 'SYSTEM-POLICY');
+  return res.json({ message: `Policy version ${policy.version} saved`, policy });
 });
 
 app.get('/api/admin/warehouses', authorize('ADMIN'), async (_req, res) => {
@@ -600,7 +764,7 @@ app.delete('/api/admin/warehouses/:id', authorize('ADMIN'), async (req, res) => 
 // 4. CORE INVENTORY & PRODUCTS
 // ==========================================
 app.get('/api/products', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
-  res.json({ products: getProductSnapshots(), categories });
+  res.json({ products: getProductSnapshots((_req as any).user?.role === 'ADMIN' || _req.query.includeInactive === 'true'), categories });
 });
 
 app.post('/api/products', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), async (req: any, res) => {
@@ -631,7 +795,7 @@ app.post('/api/products', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), as
 
 app.patch('/api/products/:id', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), async (req: any, res) => {
   try {
-    const product = products.find((entry) => entry.id === Number(req.params.id));
+    const product = findProductById(Number(req.params.id));
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
     const editableFields = ['barcode', 'name', 'category', 'supplierId', 'reorderPoint', 'reorderQuantity', 'unitCost', 'price', 'warehouse', 'warehouseId', 'binLocation', 'imageUrl', 'isActive'];
@@ -655,15 +819,15 @@ app.get('/api/products/low-stock', authorize('MANAGER', 'WAREHOUSE_STAFF'), (_re
 });
 
 app.get('/api/stock-movements', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (_req, res) => {
-  res.json({ movements: stockMovements });
+  res.json({ movements: stockMovements.filter((movement) => belongsToCompany(movement.companyId)) });
 });
 
 app.get('/api/dashboard/summary', authorize('MANAGER'), (_req, res) => {
   res.json(getDashboardSummary());
 });
 
-app.get('/api/inventory/workspace', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (req: any, res) => {
-  res.json(workspacePayload(req.user.role));
+app.get('/api/inventory/workspace', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
+  res.json(await workspacePayload(req.user.role));
 });
 
 app.get('/api/inventory/items', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (req, res) => {
@@ -702,7 +866,7 @@ app.post('/api/sales', authorize('MANAGER', 'CASHIER'), async (req: any, res) =>
 
     const saleResult = createSaleTransaction(toSaleItems(req.body), {
       cashierName: req.user?.name || req.user?.email || 'Cashier',
-      cashierEmployeeId: req.user?.employeeId || 'EMP-CSH-201',
+      cashierEmployeeId: req.user?.employeeId || 'CSH-201',
       paymentMethod,
       paymentReference,
       discountPercent,
@@ -728,7 +892,7 @@ app.post('/api/sales', authorize('MANAGER', 'CASHIER'), async (req: any, res) =>
 });
 
 app.get('/api/sales/receipts', authorize('MANAGER', 'CASHIER'), (_req, res) => {
-  res.json({ receipts: salesReceipts });
+  res.json({ receipts: salesReceipts.filter((receipt) => belongsToCompany(receipt.companyId)) });
 });
 
 // Process 2-Step Returns with Visual Reasons
@@ -738,12 +902,18 @@ app.post('/api/returns', authorize('MANAGER', 'CASHIER'), async (req: any, res) 
   if (!productId || !quantity) {
     return res.status(400).json({ error: 'productId and quantity are required' });
   }
+  if (isPolicyEnforced('returns-verification') && !String(receiptNumber || '').trim()) {
+    return res.status(400).json({ error: 'A receipt is required by the active return verification policy' });
+  }
 
   try {
     const receipt = receiptNumber
-      ? salesReceipts.find((entry) => entry.receiptNumber.toUpperCase() === String(receiptNumber).trim().toUpperCase())
+      ? salesReceipts.find((entry) => belongsToCompany(entry.companyId) && entry.receiptNumber.toUpperCase() === String(receiptNumber).trim().toUpperCase())
       : undefined;
     const purchasedLine = receipt?.items.find((item) => item.productId === Number(productId));
+    if (isPolicyEnforced('returns-verification') && !receipt) {
+      return res.status(400).json({ error: 'The supplied receipt could not be verified' });
+    }
     if (receipt && (!purchasedLine || Number(quantity) > purchasedLine.quantity)) {
       return res.status(400).json({ error: 'Return quantity exceeds the quantity on the original receipt' });
     }
@@ -888,7 +1058,7 @@ app.post('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), async (re
 });
 
 app.get('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), (_req, res) => {
-  res.json({ cycleCounts });
+  res.json({ cycleCounts: cycleCounts.filter((count) => belongsToCompany(count.companyId)) });
 });
 
 // ==========================================
@@ -970,7 +1140,14 @@ app.patch('/api/purchase-orders/:id/receive', authorize('MANAGER', 'WAREHOUSE_ST
       req.body?.binCode ? String(req.body.binCode) : undefined,
     );
     const { receivingMovement, ...purchaseOrder } = receivedOrder;
-    const product = products.find((entry) => entry.sku === purchaseOrder.sku);
+    if (receivingMovement && (req.body?.condition || req.body?.notes)) {
+      receivingMovement.notes = [
+        receivingMovement.notes,
+        req.body?.condition ? `Condition: ${String(req.body.condition)}` : '',
+        req.body?.notes ? `Note: ${String(req.body.notes)}` : '',
+      ].filter(Boolean).join(' | ');
+    }
+    const product = findProductBySku(purchaseOrder.sku);
     if (product && receivingMovement) {
       await persistReceiving(toProductSnapshot(product), receivingMovement);
     }
@@ -1001,7 +1178,7 @@ app.get('/api/forecast/:sku', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF')
 // 9. ONLINE ORDER SAGA WORKFLOW
 // ==========================================
 app.get('/api/orders', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_STAFF'), (_req, res) => {
-  res.json({ orders: customerOrders });
+  res.json({ orders: customerOrders.filter((order) => belongsToCompany(order.companyId)) });
 });
 
 app.post('/api/orders/reserve', authorize('MANAGER', 'CASHIER'), async (req: any, res) => {
@@ -1012,7 +1189,7 @@ app.post('/api/orders/reserve', authorize('MANAGER', 'CASHIER'), async (req: any
       shippingAddress: req.body?.shippingAddress ? String(req.body.shippingAddress) : undefined,
     });
     await persistCustomerOrder(order, getProductSnapshots());
-    return res.status(201).json({ message: 'Order reserved successfully', order, orders: customerOrders, ...inventoryPayload() });
+    return res.status(201).json({ message: 'Order reserved successfully', order, orders: customerOrders.filter((entry) => belongsToCompany(entry.companyId)), ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to reserve order');
   }
@@ -1022,7 +1199,7 @@ app.patch('/api/orders/:id/commit', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_S
   try {
     const order = commitReservedOrder(Number(req.params.id));
     await persistCustomerOrderStatus(order, getProductSnapshots());
-    return res.json({ message: 'Reserved order committed to fulfillment', order, orders: customerOrders, ...inventoryPayload() });
+    return res.json({ message: 'Reserved order committed to fulfillment', order, orders: customerOrders.filter((entry) => belongsToCompany(entry.companyId)), ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to commit reserved order');
   }
@@ -1032,7 +1209,7 @@ app.patch('/api/orders/:id/release', authorize('MANAGER', 'CASHIER', 'WAREHOUSE_
   try {
     const order = releaseReservedOrder(Number(req.params.id));
     await persistCustomerOrderStatus(order, getProductSnapshots());
-    return res.json({ message: 'Reserved order released', order, orders: customerOrders, ...inventoryPayload() });
+    return res.json({ message: 'Reserved order released', order, orders: customerOrders.filter((entry) => belongsToCompany(entry.companyId)), ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to release reserved order');
   }

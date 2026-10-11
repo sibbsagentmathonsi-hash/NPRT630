@@ -4,6 +4,7 @@ import { sequelize } from '../config/sequelize';
 
 export interface StockMovementAttributes {
   id: number;
+  companyId?: string;
   productId: number;
   sku: string;
   type: 'SALE' | 'RETURN' | 'RECEIVE' | 'AUDIT_ADJUSTMENT' | 'RESERVE' | 'RELEASE';
@@ -20,6 +21,7 @@ export type StockMovementCreationAttributes = Optional<StockMovementAttributes, 
 
 export class StockMovementModel extends Model<StockMovementAttributes, StockMovementCreationAttributes> implements StockMovementAttributes {
   public id!: number;
+  public companyId?: string;
   public productId!: number;
   public sku!: string;
   public type!: 'SALE' | 'RETURN' | 'RECEIVE' | 'AUDIT_ADJUSTMENT' | 'RESERVE' | 'RELEASE';
@@ -39,6 +41,7 @@ StockMovementModel.init(
       primaryKey: true,
       autoIncrement: true,
     },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     productId: {
       type: DataTypes.INTEGER,
       allowNull: false,

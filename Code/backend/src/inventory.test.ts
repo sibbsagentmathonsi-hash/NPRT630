@@ -40,6 +40,8 @@ import {
   verifyToken,
 } from './modules/auth/auth';
 
+const testAdminPassword = process.env.ADMIN_PASSWORD || '@Arg3nt2003';
+
 test('sale deducts stock when quantity is valid', () => {
   assert.equal(stockAfterSale(50, 12), 38);
 });
@@ -166,7 +168,7 @@ test('multi-line sale validates every line before updating stock and generates r
     ],
     {
       cashierName: 'Thandi Molefe',
-      cashierEmployeeId: 'EMP-CSH-201',
+      cashierEmployeeId: 'CSH-201',
       paymentMethod: 'CASH',
       discountPercent: 10,
       tenderAmount: 100,
@@ -189,7 +191,7 @@ test('process return restores stock and records structured reason', () => {
     quantity: 2,
     reason: 'Damaged Product',
     notes: 'Seal was damaged during transit',
-    actor: 'Thandi Molefe (EMP-CSH-201)',
+    actor: 'Thandi Molefe (CSH-201)',
   });
 
   assert.equal(milk.stock, stockBefore + 2);
@@ -277,7 +279,7 @@ test('cycle count reconciles stock discrepancies with audit movement', () => {
     warehouseId: 'CPT-02',
     binCode: 'B-04',
     items: [{ productId: item.id, countedQty: targetStock }],
-    actor: 'Hlonela Dlamini (EMP-WRH-301)',
+    actor: 'Hlonela Dlamini (WRH-301)',
     notes: 'Monthly physical count',
   });
 
@@ -328,16 +330,16 @@ test('admin can register new employee by sector with generated Employee ID', () 
 
   assert.equal(regResult.success, true);
   assert.ok(regResult.user);
-  assert.ok(regResult.user.employeeId.startsWith('EMP-WRH-'));
+  assert.ok(regResult.user.employeeId.startsWith('WRH-'));
   assert.equal(regResult.user.status, 'PENDING_SETUP');
   assert.equal(regResult.user.isFirstLogin, true);
 });
 
 test('admin login works with Employee ID and email', () => {
-  const userByEmail = authenticateUser('sibbs.agentmathonsi@gmail.com', '@Arg3nt2003');
+  const userByEmail = authenticateUser('sibbs.agentmathonsi@gmail.com', testAdminPassword);
   assert.ok(userByEmail);
 
-  const userById = authenticateUser('EMP-ADM-001', '@Arg3nt2003');
+  const userById = authenticateUser('ADM-001', testAdminPassword);
   assert.ok(userById);
   assert.equal(userById.email, 'sibbs.agentmathonsi@gmail.com');
 });
@@ -370,7 +372,9 @@ test('first-time password setup activates account and updates status', () => {
 test('generateToken and verifyToken preserve employee ID, sector, and role', () => {
   const token = generateToken({
     id: 1,
-    employeeId: 'EMP-ADM-001',
+    companyId: 'company-default',
+    isPlatformAdmin: true,
+    employeeId: 'ADM-001',
     name: 'Sibusiso Mathonsi',
     email: 'sibbs.agentmathonsi@gmail.com',
     role: 'ADMIN' as const,
@@ -383,7 +387,7 @@ test('generateToken and verifyToken preserve employee ID, sector, and role', () 
   });
 
   const payload = verifyToken(token);
-  assert.equal(payload.employeeId, 'EMP-ADM-001');
+  assert.equal(payload.employeeId, 'ADM-001');
   assert.equal(payload.role, 'ADMIN');
   assert.equal(payload.sector, 'System Administration');
 });

@@ -1,7 +1,9 @@
 import { createReceiving, findProductBySku, getLowStockProducts, type StockMovement } from '../../inventory';
+import { belongsToCompany, currentCompanyId, DEFAULT_COMPANY_ID } from '../../config/tenancy';
 
 export type Supplier = {
   id: number;
+  companyId?: string;
   name: string;
   contact: string;
   leadTimeDays: number;
@@ -13,6 +15,7 @@ export type PurchaseOrderStatus = 'DRAFT' | 'APPROVED' | 'SENT' | 'PARTIALLY_REC
 
 export type PurchaseOrder = {
   id: number;
+  companyId?: string;
   supplierId: number;
   sku: string;
   itemName: string;
@@ -64,6 +67,9 @@ export const purchaseOrders: PurchaseOrder[] = [
   },
 ];
 
+for (const supplier of suppliers) supplier.companyId ??= DEFAULT_COMPANY_ID;
+for (const order of purchaseOrders) order.companyId ??= DEFAULT_COMPANY_ID;
+
 let purchaseOrderId = purchaseOrders.length + 1;
 
 const assertPositiveInteger = (quantity: number): void => {
@@ -73,7 +79,7 @@ const assertPositiveInteger = (quantity: number): void => {
 };
 
 const getSupplierById = (supplierId: number): Supplier => {
-  return suppliers.find((supplier) => supplier.id === supplierId) || suppliers[0];
+  return suppliers.find((supplier) => belongsToCompany(supplier.companyId) && supplier.id === supplierId) || suppliers.find((supplier) => belongsToCompany(supplier.companyId)) || suppliers[0];
 };
 
 const toPurchaseOrderView = (order: PurchaseOrder): PurchaseOrderView => ({
@@ -88,11 +94,11 @@ const addDays = (days: number): string => {
   return date.toISOString();
 };
 
-export const getPurchaseOrders = (): PurchaseOrderView[] => purchaseOrders.map(toPurchaseOrderView);
+export const getPurchaseOrders = (): PurchaseOrderView[] => purchaseOrders.filter((order) => belongsToCompany(order.companyId)).map(toPurchaseOrderView);
 
 export const hydratePurchaseOrders = (storedOrders: PurchaseOrder[]): void => {
   if (storedOrders.length === 0) return;
-  purchaseOrders.splice(0, purchaseOrders.length, ...storedOrders);
+  purchaseOrders.splice(0, purchaseOrders.length, ...storedOrders.map((order) => ({ ...order, companyId: order.companyId ?? DEFAULT_COMPANY_ID })));
   purchaseOrderId = Math.max(...storedOrders.map((order) => order.id), 0) + 1;
 };
 
@@ -113,6 +119,7 @@ export const createPurchaseOrder = (
 
   const order: PurchaseOrder = {
     id: purchaseOrderId++,
+    companyId: currentCompanyId(),
     supplierId: supplier.id,
     sku: normalizedSku,
     itemName: itemName.trim(),
@@ -154,7 +161,7 @@ export const generateLowStockPurchaseOrders = (): PurchaseOrderView[] => {
 };
 
 export const approvePurchaseOrder = (id: number): PurchaseOrderView => {
-  const order = purchaseOrders.find((entry) => entry.id === id);
+  const order = purchaseOrders.find((entry) => belongsToCompany(entry.companyId) && entry.id === id);
   if (!order) {
     throw new Error('Purchase order not found');
   }
@@ -171,7 +178,7 @@ export const approvePurchaseOrder = (id: number): PurchaseOrderView => {
 };
 
 export const sendPurchaseOrder = (id: number): PurchaseOrderView => {
-  const order = purchaseOrders.find((entry) => entry.id === id);
+  const order = purchaseOrders.find((entry) => belongsToCompany(entry.companyId) && entry.id === id);
   if (!order) {
     throw new Error('Purchase order not found');
   }
@@ -186,7 +193,7 @@ export const sendPurchaseOrder = (id: number): PurchaseOrderView => {
 };
 
 export const cancelPurchaseOrder = (id: number): PurchaseOrderView => {
-  const order = purchaseOrders.find((entry) => entry.id === id);
+  const order = purchaseOrders.find((entry) => belongsToCompany(entry.companyId) && entry.id === id);
   if (!order) {
     throw new Error('Purchase order not found');
   }
@@ -208,7 +215,7 @@ export const receivePurchaseOrder = (
 ): PurchaseOrderView => {
   assertPositiveInteger(quantity);
 
-  const order = purchaseOrders.find((entry) => entry.id === id);
+  const order = purchaseOrders.find((entry) => belongsToCompany(entry.companyId) && entry.id === id);
   if (!order) {
     throw new Error('Purchase order not found');
   }
@@ -244,7 +251,7 @@ export const receivePurchaseOrder = (
 };
 
 export const getSupplierPerformance = () => {
-  return suppliers.map((supplier) => ({
+  return suppliers.filter((supplier) => belongsToCompany(supplier.companyId)).map((supplier) => ({
     ...supplier,
     suggestedPriority: supplier.rating >= 4.6 && supplier.onTimeDeliveryRate >= 90 ? 'High' : 'Medium',
     risk: supplier.onTimeDeliveryRate < 88 ? 'Watch' : 'Normal',

@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { Sequelize } from 'sequelize';
+import { currentCompanyId } from './tenancy';
 
 dotenv.config();
 
@@ -19,4 +20,8 @@ export const sequelize = new Sequelize(dbName, dbUser, dbPassword, {
   logging: false,
   dialectOptions: { ssl: false },
   pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
+});
+
+sequelize.addHook('beforeValidate', (instance: any) => {
+  if (instance && 'companyId' in instance && !instance.companyId) instance.companyId = currentCompanyId();
 });

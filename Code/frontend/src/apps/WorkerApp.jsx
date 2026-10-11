@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { WorkerAuthModal } from '../components/auth/WorkerAuthModal';
 import { CashierWorkspace } from '../components/cashier/CashierWorkspace';
 import { BrandLogo } from '../components/common/BrandLogo';
+import { AppSidebar } from '../components/common/AppSidebar';
 import { Icon } from '../components/common/Icons';
 import { ManagerWorkspace } from '../components/manager/ManagerWorkspace';
 import { WarehouseWorkspace } from '../components/warehouse/WarehouseWorkspace';
@@ -9,6 +10,19 @@ import { WarehouseWorkspace } from '../components/warehouse/WarehouseWorkspace';
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 const WORKER_TOKEN_KEY = 'syncstock_worker_token';
 const WORKER_USER_KEY = 'syncstock_worker_user';
+
+const normalizeEmployeeId = (value) => {
+  if (typeof value !== 'string') return value;
+  return value.trim().replace(/^EMP-/i, '');
+};
+
+const normalizeStoredUser = (user) => {
+  if (!user) return user;
+  return {
+    ...user,
+    employeeId: normalizeEmployeeId(user.employeeId),
+  };
+};
 
 const initialWorkspace = {
   products: [],
@@ -34,6 +48,7 @@ const initialWorkspace = {
   supplierPerformance: [],
   forecasts: [],
   orders: [],
+  vatRate: 15,
 };
 
 export default function WorkerApp() {
@@ -47,6 +62,8 @@ export default function WorkerApp() {
   const [workspace, setWorkspace] = useState(initialWorkspace);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  const [activeNav, setActiveNav] = useState('overview');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type });
@@ -106,11 +123,13 @@ export default function WorkerApp() {
       return;
     }
 
-    setCurrentUser(user);
+    const normalizedUser = normalizeStoredUser(user);
+
+    setCurrentUser(normalizedUser);
     setToken(newToken);
     localStorage.setItem(WORKER_TOKEN_KEY, newToken);
-    localStorage.setItem(WORKER_USER_KEY, JSON.stringify(user));
-    showToast(`Logged in as ${user.name} (${user.employeeId})`, 'success');
+    localStorage.setItem(WORKER_USER_KEY, JSON.stringify(normalizedUser));
+    showToast(`Logged in as ${normalizedUser.name} (${normalizedUser.employeeId})`, 'success');
   };
 
   const handleLogout = () => {
@@ -130,11 +149,12 @@ export default function WorkerApp() {
       });
       const data = await res.json();
       if (res.ok && data.token && data.user?.role !== 'ADMIN') {
-        setCurrentUser(data.user);
+        const normalizedUser = normalizeStoredUser(data.user);
+        setCurrentUser(normalizedUser);
         setToken(data.token);
         localStorage.setItem(WORKER_TOKEN_KEY, data.token);
-        localStorage.setItem(WORKER_USER_KEY, JSON.stringify(data.user));
-        showToast(`Switched session to ${data.user.name} (${data.user.employeeId})`, 'info');
+        localStorage.setItem(WORKER_USER_KEY, JSON.stringify(normalizedUser));
+        showToast(`Switched session to ${normalizedUser.name} (${normalizedUser.employeeId})`, 'info');
       }
     } catch (err) {
       console.warn('Could not switch worker profile', err);
@@ -163,13 +183,14 @@ export default function WorkerApp() {
     const savedUser = localStorage.getItem(WORKER_USER_KEY);
     if (savedToken && savedUser) {
       try {
-        const parsedUser = JSON.parse(savedUser);
+        const parsedUser = normalizeStoredUser(JSON.parse(savedUser));
         if (parsedUser.role === 'ADMIN') {
           clearWorkerSession();
           return;
         }
         setToken(savedToken);
         setCurrentUser(parsedUser);
+        localStorage.setItem(WORKER_USER_KEY, JSON.stringify(parsedUser));
       } catch {
         clearWorkerSession();
       }
@@ -181,6 +202,12 @@ export default function WorkerApp() {
       fetchWorkspace();
     }
   }, [token, currentUser?.role]);
+
+  useEffect(() => {
+    if (currentUser?.role === 'CASHIER') setActiveNav('pos');
+    else if (currentUser?.role === 'WAREHOUSE_STAFF') setActiveNav('receiving');
+    else setActiveNav('overview');
+  }, [currentUser?.role]);
 
   return (
     <div className={`worker-app ${headerCompact ? 'header-compact' : ''}`}>
@@ -242,7 +269,7 @@ export default function WorkerApp() {
               <div style={{ textAlign: 'left', lineHeight: 1.15 }}>
                 <div style={{ fontSize: '0.8125rem', fontWeight: 700 }}>{currentUser.name}</div>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                  <span className="form-input-mono">{currentUser.employeeId}</span> - {currentUser.role}
+                  <span className="form-input-mono employee-id-inline">{currentUser.employeeId}</span> - {currentUser.role}
                 </div>
               </div>
 
@@ -288,32 +315,35 @@ export default function WorkerApp() {
         </div>
       )}
 
-      <main className="app-main">
+      <div className="app-layout">
+        {currentUser && <AppSidebar role={currentUser.role} activeItem={activeNav} onNavigate={setActiveNav} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} />}
+        <main className={`app-main ${currentUser ? 'has-sidebar' : ''}`}>
         {currentUser?.role === 'MANAGER' || currentUser?.role === 'PROCUREMENT_STAFF' ? (
-          <ManagerWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} />
+          <ManagerWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} initialTab={activeNav} />
         ) : currentUser?.role === 'CASHIER' ? (
-          <CashierWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} />
+          <CashierWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} initialTab={activeNav} />
         ) : currentUser?.role === 'WAREHOUSE_STAFF' ? (
-          <WarehouseWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} />
+          <WarehouseWorkspace workspace={workspace} apiBase={API_BASE} token={token} currentUser={currentUser} onRefresh={fetchWorkspace} onNotify={showToast} initialTab={activeNav} />
         ) : (
           <div className="welcome-panel">
             <div className="welcome-grid" aria-hidden="true" />
             <div className="welcome-copy">
               <span className="eyebrow"><span className="eyebrow-line" /> Store operations console</span>
-              <h1>Move stock with<br /><em>confidence.</em></h1>
-              <p>One focused workspace for sales, receiving, replenishment, and the decisions that keep a store moving.</p>
+              <h1>Keep the floor<br /><em>moving.</em></h1>
+              <p>One focused workspace for sales, receiving, replenishment, and the decisions that keep every aisle, shelf, and shipment honest.</p>
               <button className="btn btn-primary btn-lg" onClick={() => setShowAuthModal(true)}>
                 <Icon name="lock" size={16} /> Open Worker Login
               </button>
             </div>
             <div className="welcome-signal" aria-hidden="true">
               <span>SYNC / 02</span>
-              <strong>READY</strong>
+              <strong>LIVE</strong>
               <i />
             </div>
           </div>
         )}
-      </main>
+        </main>
+      </div>
 
       <WorkerAuthModal
         isOpen={showAuthModal}

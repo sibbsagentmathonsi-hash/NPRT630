@@ -1,14 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icon } from '../common/Icons';
 
-export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify }) => {
+export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'receiving' }) => {
   const [activeTab, setActiveTab] = useState('receiving'); // 'receiving' | 'cycle-count' | 'adjustments' | 'fulfillment'
+  useEffect(() => setActiveTab(['receiving', 'cycle-count', 'adjustments', 'fulfillment'].includes(initialTab) ? initialTab : 'receiving'), [initialTab]);
   const [isMobileSimMode, setIsMobileSimMode] = useState(false);
 
   const products = workspace.products || [];
   const purchaseOrders = workspace.purchaseOrders || [];
   const cycleCounts = workspace.cycleCounts || [];
   const orders = workspace.orders || [];
+  const warehouses = workspace.warehouses?.length ? workspace.warehouses : [
+    { id: 'JHB-01', name: 'Johannesburg Central Distribution Hub', city: 'Johannesburg, Gauteng' },
+  ];
 
   // Receiving Goods State
   const [selectedPoId, setSelectedPoId] = useState('');
@@ -42,8 +46,17 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
   const [adjReason, setAdjReason] = useState('Damaged goods written off');
   const [adjLoading, setAdjLoading] = useState(false);
 
-  // Online Fulfillment State
-  const [selectedOrderId, setSelectedOrderId] = useState('');
+  useEffect(() => {
+    if (warehouses.length > 0 && !warehouses.some((warehouse) => warehouse.id === receivingWarehouseId)) {
+      setReceivingWarehouseId(warehouses[0].id);
+      setAuditWarehouse(warehouses[0].id);
+    }
+    if (products.length > 0 && auditItems.length === 0) {
+      setAuditItems(products.slice(0, 8).map((p) => ({
+        productId: p.id, sku: p.sku, name: p.name, systemQty: p.stock, countedQty: p.stock, verified: false,
+      })));
+    }
+  }, [products]);
 
   // Handle PO Goods Receiving
   const handleReceiveGoods = async (e) => {
@@ -66,6 +79,8 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
           quantity: Number(receivedQty) || po?.remainingQuantity || 1,
           warehouseId: receivingWarehouseId,
           binCode: receivingBinCode,
+          condition: receivingCondition,
+          notes: receivingNotes,
         }),
       });
 
@@ -90,7 +105,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
   const handleUpdateAuditCount = (productId, delta) => {
     setAuditItems(
       auditItems.map((item) =>
-        item.productId === productId ? { ...item, countedQty: Math.max(0, item.countedQty + delta) } : item
+        item.productId === productId ? { ...item, countedQty: Math.max(0, item.countedQty + delta), verified: true } : item
       )
     );
   };
@@ -175,16 +190,18 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
       if (res.ok) {
         onRefresh();
         onNotify?.(`Order committed to shipping. Label generated!`, 'success');
+      } else {
+        throw new Error(data.error || 'Fulfillment update failed');
       }
     } catch (err) {
-      onNotify?.('Fulfillment update failed', 'error');
+      onNotify?.(err.message, 'error');
     }
   };
 
   const pendingDeliveries = purchaseOrders.filter((p) => p.status === 'APPROVED' || p.status === 'SENT');
 
   return (
-    <div style={{ padding: '1rem 1.5rem', maxWidth: isMobileSimMode ? '480px' : '1400px', margin: '0 auto' }}>
+    <div className="workspace-page warehouse-page" style={{ padding: '1rem 1.5rem', maxWidth: isMobileSimMode ? '480px' : '1400px', margin: '0 auto' }}>
       {/* Header & Mobile Mode Toggle */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div>
@@ -192,7 +209,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
             <span className="badge badge-warning">
               <Icon name="truck" size={14} /> Warehouse Logistics Terminal
             </span>
-            <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Facility: Johannesburg Central (JHB-01)</span>
+          <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Facility: {warehouses.find((warehouse) => warehouse.id === receivingWarehouseId)?.name || receivingWarehouseId}</span>
           </div>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 800, marginTop: '2px' }}>
             Inbound, Audit & Fulfillment Operations
@@ -209,7 +226,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
       </div>
 
       {/* Sub-Navigation Tabs */}
-      <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', borderBottom: '1px solid var(--border-color)', marginBottom: '1.25rem', paddingBottom: '0.5rem' }}>
+      <div className="workspace-subnav" style={{ display: 'flex', gap: '6px', overflowX: 'auto', borderBottom: '1px solid var(--border-color)', marginBottom: '1.25rem', paddingBottom: '0.5rem' }}>
         <button className={`btn ${activeTab === 'receiving' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveTab('receiving')}>
           <Icon name="truck" size={16} /> Receive Goods ({pendingDeliveries.length})
         </button>
@@ -306,12 +323,14 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                 <div className="grid-cols-2">
                   <div className="form-group">
                     <label className="form-label">Receiving Warehouse ID</label>
-                    <input
-                      className="form-input"
+                    <select
+                      className="form-select"
                       value={receivingWarehouseId}
                       onChange={(e) => setReceivingWarehouseId(e.target.value)}
                       required
-                    />
+                    >
+                      {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.id} — {warehouse.name}</option>)}
+                    </select>
                   </div>
                   <div className="form-group">
                     <label className="form-label">Receiving Bin</label>
@@ -354,7 +373,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
       {activeTab === 'cycle-count' && (
         <div>
           <div className="card" style={{ marginBottom: '1.25rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <div>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Bin-Level Cycle Count Audit</h2>
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
@@ -362,8 +381,10 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                 </p>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <span className="badge badge-primary form-input-mono">{auditWarehouse}</span>
-                <span className="badge badge-gray form-input-mono">Bin: {auditBin}</span>
+                <select className="form-select form-input-mono warehouse-inline-select" value={auditWarehouse} onChange={(e) => setAuditWarehouse(e.target.value)}>
+                  {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.id}</option>)}
+                </select>
+                <input className="form-input form-input-mono warehouse-inline-input" aria-label="Cycle count bin" value={auditBin} onChange={(e) => setAuditBin(e.target.value.toUpperCase())} />
               </div>
             </div>
 
@@ -379,7 +400,9 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                   </tr>
                 </thead>
                 <tbody>
-                  {auditItems.map((item) => {
+                  {auditItems.length === 0 ? (
+                    <tr><td colSpan="4"><div className="empty-state"><Icon name="box" size={28} /><strong>Inventory is still loading</strong><span>Refresh the workspace to load products for this count.</span></div></td></tr>
+                  ) : auditItems.map((item) => {
                     const delta = item.countedQty - item.systemQty;
                     return (
                       <tr key={item.productId}>
@@ -423,7 +446,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
           <div className="sticky-footer-bar">
             <div>
               <span style={{ fontSize: '0.875rem', fontWeight: 700 }}>
-                {auditItems.length} of {auditItems.length} Products Verified
+                {auditItems.filter((item) => item.verified).length} of {auditItems.length} Products Reviewed
               </span>
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 Auditor: {currentUser?.name} ({currentUser?.employeeId})
@@ -433,7 +456,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
             <button
               className="btn btn-success btn-lg"
               style={{ padding: '10px 28px', fontSize: '1rem', fontWeight: 800 }}
-              disabled={submittingAudit}
+              disabled={submittingAudit || auditItems.length === 0}
               onClick={handleSubmitAudit}
             >
               <Icon name="check-circle" size={20} />
@@ -532,7 +555,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                 </tr>
               </thead>
               <tbody>
-                {orders.map((o) => (
+                {orders.length === 0 ? <tr><td colSpan="6"><div className="empty-state"><Icon name="shopping-cart" size={28} /><strong>No orders are waiting for fulfillment</strong><span>New reserved orders will appear here.</span></div></td></tr> : orders.map((o) => (
                   <tr key={o.id}>
                     <td><span className="badge badge-primary form-input-mono">{o.orderNumber}</span></td>
                     <td>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icon } from '../common/Icons';
 
 const returnReasons = [
@@ -10,8 +10,9 @@ const returnReasons = [
   { label: 'Packaging Compromised', icon: 'box' },
 ];
 
-export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify }) => {
+export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'pos' }) => {
   const [activeTab, setActiveTab] = useState('pos'); // 'pos' | 'returns' | 'receipts'
+  useEffect(() => setActiveTab(['pos', 'returns', 'receipts'].includes(initialTab) ? initialTab : 'pos'), [initialTab]);
   const products = workspace.products || [];
   const receipts = workspace.receipts || [];
 
@@ -43,7 +44,9 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const cartSubtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const discountAmount = Number(((cartSubtotal * discountPercent) / 100).toFixed(2));
   const cartTotal = Number((cartSubtotal - discountAmount).toFixed(2));
-  const vatAmount = Number(((cartTotal * 15) / 115).toFixed(2)); // 15% South African VAT
+  const vatRate = Number(workspace.vatRate ?? 15);
+  const negativeInventoryEnforced = workspace.policyControls?.some((control) => control.id === 'negative-inventory' && control.status === 'ENFORCED') ?? true;
+  const vatAmount = Number(((cartTotal * vatRate) / (100 + vatRate)).toFixed(2));
   const netSubtotal = Number((cartTotal - vatAmount).toFixed(2));
   const parsedTenderAmount = tenderAmount.trim() === '' ? NaN : Number(tenderAmount);
   const cashTenderSufficient = Number.isFinite(parsedTenderAmount) && parsedTenderAmount >= cartTotal;
@@ -55,7 +58,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
     const existing = cart.find((i) => i.productId === product.id);
     const currentQty = existing ? existing.quantity : 0;
 
-    if (currentQty + 1 > product.availableStock) {
+    if (negativeInventoryEnforced && currentQty + 1 > product.availableStock) {
       onNotify?.(`Cannot add: Insufficient stock for ${product.name} (Available: ${product.availableStock})`, 'error');
       return;
     }
@@ -90,7 +93,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
       return;
     }
 
-    if (product && newQty > product.availableStock) {
+    if (negativeInventoryEnforced && product && newQty > product.availableStock) {
       onNotify?.(`Max available stock reached (${product.availableStock} units)`, 'error');
       return;
     }
@@ -217,11 +220,11 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const filteredProducts = products.filter((p) => selectedCategory === 'ALL' || p.category === selectedCategory);
 
   return (
-    <div style={{ padding: '1rem 1.5rem', maxWidth: '1600px', margin: '0 auto' }}>
+    <div className="workspace-page cashier-page" style={{ padding: '1rem 1.5rem', maxWidth: '1600px', margin: '0 auto' }}>
       {/* Top Header & Sub-Tabs */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ display: 'flex', gap: '6px', background: 'var(--bg-subtle)', padding: '4px', borderRadius: 'var(--radius-lg)' }}>
+          <div className="workspace-subnav" style={{ display: 'flex', gap: '6px', background: 'var(--bg-subtle)', padding: '4px', borderRadius: 'var(--radius-lg)' }}>
             <button
               className={`btn ${activeTab === 'pos' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
               onClick={() => setActiveTab('pos')}
@@ -370,7 +373,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                 <span>R {netSubtotal.toFixed(2)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '4px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>VAT (15.0% Incl):</span>
+                <span style={{ color: 'var(--text-muted)' }}>VAT ({vatRate.toFixed(1)}% Incl):</span>
                 <span>R {vatAmount.toFixed(2)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8125rem', marginBottom: '8px' }}>

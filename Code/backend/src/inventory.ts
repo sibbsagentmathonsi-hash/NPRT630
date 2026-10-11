@@ -1,3 +1,6 @@
+import { getCurrentPolicy, isPolicyEnforced } from './config/policies';
+import { belongsToCompany, currentCompanyId, DEFAULT_COMPANY_ID } from './config/tenancy';
+
 export type StockMovementType = 'SALE' | 'RETURN' | 'RECEIVE' | 'AUDIT_ADJUSTMENT' | 'RESERVE' | 'RELEASE';
 
 export type ProductStatus = 'Healthy' | 'Watch' | 'Reorder';
@@ -19,6 +22,7 @@ export type Category = {
 
 export type Product = {
   id: number;
+  companyId?: string;
   sku: string;
   barcode: string;
   name: string;
@@ -46,6 +50,7 @@ export type ProductSnapshot = Product & {
 
 export type InventoryItem = {
   id: string;
+  companyId?: string;
   productId: number;
   warehouseId: string;
   binCode: string;
@@ -56,6 +61,7 @@ export type InventoryItem = {
 
 export type StockMovement = {
   id: number;
+  companyId?: string;
   productId: number;
   sku: string;
   type: StockMovementType;
@@ -82,6 +88,7 @@ export type SaleLine = SaleLineInput & {
 
 export type SaleReceipt = {
   id: number;
+  companyId?: string;
   receiptNumber: string;
   items: SaleLine[];
   subtotal: number;
@@ -102,6 +109,7 @@ export type CustomerOrderStatus = 'PENDING' | 'RESERVED' | 'PAID' | 'PICKING' | 
 
 export type CustomerOrder = {
   id: number;
+  companyId?: string;
   orderNumber: string;
   customerName: string;
   status: CustomerOrderStatus;
@@ -115,6 +123,7 @@ export type CustomerOrder = {
 
 export type CycleCountEntry = {
   id: number;
+  companyId?: string;
   auditNumber: string;
   warehouseId: string;
   binCode: string;
@@ -385,6 +394,9 @@ export const products: Product[] = [
   },
 ];
 
+const companyProducts = (): Product[] => products.filter((product) => belongsToCompany(product.companyId));
+const companyProduct = (predicate: (product: Product) => boolean): Product | undefined => companyProducts().find(predicate);
+
 export const inventoryItems: InventoryItem[] = products.map((product) => ({
   id: `${product.id}:${product.warehouseId}:${product.binLocation}`,
   productId: product.id,
@@ -404,7 +416,7 @@ export const stockMovements: StockMovement[] = [
     quantity: 7,
     timestamp: timestampToday(8, 45),
     notes: 'POS Till Sale',
-    actor: 'Thandi Molefe (EMP-CSH-201)',
+    actor: 'Thandi Molefe (CSH-201)',
     reference: 'REC-2026-1001',
     warehouseId: 'JHB-01',
     binLocation: 'A-01',
@@ -417,7 +429,7 @@ export const stockMovements: StockMovement[] = [
     quantity: 14,
     timestamp: timestampToday(9, 5),
     notes: 'Morning rush POS sale',
-    actor: 'Thandi Molefe (EMP-CSH-201)',
+    actor: 'Thandi Molefe (CSH-201)',
     reference: 'REC-2026-1002',
     warehouseId: 'JHB-01',
     binLocation: 'A-03',
@@ -430,7 +442,7 @@ export const stockMovements: StockMovement[] = [
     quantity: 1,
     timestamp: timestampToday(9, 12),
     notes: 'Damaged Product customer return',
-    actor: 'Thandi Molefe (EMP-CSH-201)',
+    actor: 'Thandi Molefe (CSH-201)',
     reference: 'RTN-2026-00045',
     warehouseId: 'CPT-02',
     binLocation: 'B-04',
@@ -443,7 +455,7 @@ export const stockMovements: StockMovement[] = [
     quantity: 20,
     timestamp: timestampToday(10, 30),
     notes: 'Supplier delivery verified against PO-1001',
-    actor: 'Hlonela Dlamini (EMP-WRH-301)',
+    actor: 'Hlonela Dlamini (WRH-301)',
     reference: 'GRN-PO-1001',
     warehouseId: 'JHB-01',
     binLocation: 'C3-042',
@@ -456,7 +468,7 @@ export const stockMovements: StockMovement[] = [
     quantity: 5,
     timestamp: timestampToday(14, 20, 1),
     notes: 'POS Sale',
-    actor: 'Thandi Molefe (EMP-CSH-201)',
+    actor: 'Thandi Molefe (CSH-201)',
     reference: 'REC-2026-0998',
     warehouseId: 'JHB-01',
     binLocation: 'B-02',
@@ -469,7 +481,7 @@ export const stockMovements: StockMovement[] = [
     quantity: 1,
     timestamp: timestampToday(16, 0, 1),
     notes: 'Reconciliation during cycle count audit',
-    actor: 'Hlonela Dlamini (EMP-WRH-301)',
+    actor: 'Hlonela Dlamini (WRH-301)',
     reference: 'AUD-2026-012',
     warehouseId: 'CPT-02',
     binLocation: 'D-01',
@@ -492,7 +504,7 @@ export const salesReceipts: SaleReceipt[] = [
     tenderAmount: 100.0,
     changeAmount: 30.8,
     cashierName: 'Thandi Molefe',
-    cashierEmployeeId: 'EMP-CSH-201',
+    cashierEmployeeId: 'CSH-201',
     createdAt: timestampToday(8, 45),
   },
   {
@@ -508,7 +520,7 @@ export const salesReceipts: SaleReceipt[] = [
     total: 1159.97,
     paymentMethod: 'CARD',
     cashierName: 'Thandi Molefe',
-    cashierEmployeeId: 'EMP-CSH-201',
+    cashierEmployeeId: 'CSH-201',
     createdAt: timestampToday(9, 30, 1),
   },
 ];
@@ -523,7 +535,7 @@ export const cycleCounts: CycleCountEntry[] = [
       { productId: 4, sku: 'ELEC-003', productName: 'Portable Bluetooth Speaker', systemQty: 7, countedQty: 7, discrepancy: 0, verified: true },
     ],
     status: 'APPROVED',
-    performedBy: 'Hlonela Dlamini (EMP-WRH-301)',
+    performedBy: 'Hlonela Dlamini (WRH-301)',
     performedAt: timestampToday(11, 0, 1),
     managerNotes: 'Count matches perfectly. Approved by Jayden Khoza.',
   },
@@ -578,8 +590,14 @@ export const customerOrders: CustomerOrder[] = [
   },
 ];
 
+for (const product of products) product.companyId ??= DEFAULT_COMPANY_ID;
+for (const item of inventoryItems) item.companyId ??= DEFAULT_COMPANY_ID;
+for (const movement of stockMovements) movement.companyId ??= DEFAULT_COMPANY_ID;
+for (const receipt of salesReceipts) receipt.companyId ??= DEFAULT_COMPANY_ID;
+for (const count of cycleCounts) count.companyId ??= DEFAULT_COMPANY_ID;
+
 export const findProductById = (id: number): Product | undefined => {
-  return products.find((p) => p.id === id);
+  return companyProduct((p) => p.id === id);
 };
 
 const storedDate = (value: unknown): string => value ? new Date(value as string | Date).toISOString() : new Date().toISOString();
@@ -588,6 +606,7 @@ export const hydrateSalesReceipts = (storedReceipts: Array<Record<string, any>>)
   if (storedReceipts.length === 0) return;
   salesReceipts.splice(0, salesReceipts.length, ...storedReceipts.map((stored) => ({
     id: Number(stored.id),
+    companyId: stored.companyId ?? DEFAULT_COMPANY_ID,
     receiptNumber: String(stored.receiptNumber),
     items: (stored.items ?? []).map((item: Record<string, any>) => ({
       productId: Number(item.productId),
@@ -616,6 +635,7 @@ export const hydrateStockMovements = (storedMovements: Array<Record<string, any>
   if (storedMovements.length === 0) return;
   stockMovements.splice(0, stockMovements.length, ...storedMovements.map((stored) => ({
     id: Number(stored.id),
+    companyId: stored.companyId ?? DEFAULT_COMPANY_ID,
     productId: Number(stored.productId),
     sku: String(stored.sku),
     type: stored.type as StockMovementType,
@@ -633,6 +653,7 @@ export const hydrateCustomerOrders = (storedOrders: Array<Record<string, any>>):
   if (storedOrders.length === 0) return;
   customerOrders.splice(0, customerOrders.length, ...storedOrders.map((stored) => ({
     id: Number(stored.id),
+    companyId: stored.companyId ?? DEFAULT_COMPANY_ID,
     orderNumber: String(stored.orderNumber),
     customerName: String(stored.customerName),
     status: stored.status as CustomerOrderStatus,
@@ -656,6 +677,7 @@ export const hydrateCycleCounts = (storedCounts: Array<Record<string, any>>): vo
   if (storedCounts.length === 0) return;
   cycleCounts.splice(0, cycleCounts.length, ...storedCounts.map((stored) => ({
     id: Number(stored.id),
+    companyId: stored.companyId ?? DEFAULT_COMPANY_ID,
     auditNumber: String(stored.auditNumber),
     warehouseId: String(stored.warehouseId),
     binCode: String(stored.binCode),
@@ -677,7 +699,7 @@ export const hydrateCycleCounts = (storedCounts: Array<Record<string, any>>): vo
 
 const getOrCreateInventoryItem = (product: Product, warehouseId: string, binCode: string): InventoryItem => {
   const existing = inventoryItems.find(
-    (item) => item.productId === product.id && item.warehouseId === warehouseId && item.binCode === binCode
+    (item) => belongsToCompany(item.companyId) && item.productId === product.id && item.warehouseId === warehouseId && item.binCode === binCode
   );
   if (existing) return existing;
 
@@ -690,19 +712,20 @@ const getOrCreateInventoryItem = (product: Product, warehouseId: string, binCode
     qtyReserved: 0,
     updatedAt: new Date().toISOString(),
   };
+  item.companyId = currentCompanyId();
   inventoryItems.push(item);
   return item;
 };
 
 const syncProductInventoryTotals = (product: Product): void => {
-  const locations = inventoryItems.filter((item) => item.productId === product.id);
+  const locations = inventoryItems.filter((item) => belongsToCompany(item.companyId) && item.productId === product.id);
   product.stock = locations.reduce((total, item) => total + item.qtyOnHand, 0);
   product.qtyReserved = locations.reduce((total, item) => total + item.qtyReserved, 0);
 };
 
 export const getInventoryItems = (productId?: number): InventoryItem[] => {
   return inventoryItems
-    .filter((item) => productId === undefined || item.productId === productId)
+    .filter((item) => belongsToCompany(item.companyId) && (productId === undefined || item.productId === productId))
     .map((item) => ({ ...item }));
 };
 
@@ -710,6 +733,7 @@ export const hydrateInventoryItems = (storedItems: Array<Partial<InventoryItem> 
   inventoryItems.splice(0, inventoryItems.length);
   for (const stored of storedItems) {
     inventoryItems.push({
+      companyId: stored.companyId ?? DEFAULT_COMPANY_ID,
       id: stored.id,
       productId: Number(stored.productId),
       warehouseId: stored.warehouseId,
@@ -812,6 +836,7 @@ export const createStockAdjustment = (
     warehouseId: adjustmentWarehouseId,
     binLocation: adjustmentBinCode,
   };
+  movement.companyId = currentCompanyId();
   stockMovements.unshift(movement);
 
   return { movement, updatedProduct: toProductSnapshot(product) };
@@ -902,9 +927,10 @@ const releaseReservedStock = (product: Product, quantity: number): void => {
 
 export const hydrateProducts = (storedProducts: Array<Partial<Product> & { id: number; sku: string }>): void => {
   for (const stored of storedProducts) {
-    const existingIndex = products.findIndex((product) => product.id === stored.id || product.sku === stored.sku);
+    const existingIndex = products.findIndex((product) => belongsToCompany(product.companyId) && (product.id === stored.id || product.sku === stored.sku));
     const hydrated: Product = {
       id: stored.id,
+      companyId: stored.companyId ?? DEFAULT_COMPANY_ID,
       sku: stored.sku,
       barcode: stored.barcode ?? '',
       name: stored.name ?? stored.sku,
@@ -937,7 +963,7 @@ export const hydrateProducts = (storedProducts: Array<Partial<Product> & { id: n
 
 export const findProductBySku = (sku: string): Product | undefined => {
   const normalized = sku.trim().toUpperCase();
-  return products.find((p) => p.sku.toUpperCase() === normalized);
+  return companyProduct((p) => p.sku.toUpperCase() === normalized);
 };
 
 export const stockAfterSale = (currentStock: number, quantity: number): number => {
@@ -979,16 +1005,16 @@ export const calculateSaleTotal = (items: SaleLineInput[], discountPercent = 0):
   }
 
   for (const [productId, quantity] of quantitiesByProduct) {
-    const product = products.find((entry) => entry.id === productId && entry.isActive);
+    const product = companyProduct((entry) => entry.id === productId && entry.isActive);
     if (!product) throw new Error(`Product not found: ID ${productId}`);
     const available = getAvailableStock(product);
-    if (quantity > available) {
+    if (isPolicyEnforced('negative-inventory') && quantity > available) {
       throw new Error(`Insufficient stock for ${product.name} (SKU: ${product.sku}). Requested: ${quantity}, Available: ${available}`);
     }
   }
 
   const subtotal = items.reduce((total, item) => {
-    const product = products.find((entry) => entry.id === item.productId)!;
+    const product = companyProduct((entry) => entry.id === item.productId)!;
     return total + product.price * item.quantity;
   }, 0);
   const discountAmount = Number(((subtotal * discountPercent) / 100).toFixed(2));
@@ -1014,8 +1040,8 @@ export const toProductSnapshot = (product: Product): ProductSnapshot => {
   };
 };
 
-export const getProductSnapshots = (): ProductSnapshot[] => {
-  return products.filter((p) => p.isActive).map(toProductSnapshot);
+export const getProductSnapshots = (includeInactive = false): ProductSnapshot[] => {
+  return companyProducts().filter((p) => includeInactive || p.isActive).map(toProductSnapshot);
 };
 
 export const getLowStockProducts = (): ProductSnapshot[] => {
@@ -1043,7 +1069,7 @@ export const createProduct = (data: {
   if (!normalizedSku || !normalizedName || !data.category.trim()) {
     throw new Error('SKU, product name, and category are required');
   }
-  if (products.some((product) => product.sku === normalizedSku)) {
+  if (companyProducts().some((product) => product.sku === normalizedSku)) {
     throw new Error(`A product with SKU ${normalizedSku} already exists`);
   }
 
@@ -1053,7 +1079,7 @@ export const createProduct = (data: {
       const body = `600${String(Date.now()).slice(-9)}`.slice(0, 12);
       const checksum = body.split('').reduce((sum, digit, index) => sum + Number(digit) * (index % 2 === 0 ? 1 : 3), 0);
       barcode = `${body}${(10 - (checksum % 10)) % 10}`;
-    } while (products.some((product) => product.barcode === barcode));
+    } while (companyProducts().some((product) => product.barcode === barcode));
     return barcode;
   };
 
@@ -1079,6 +1105,7 @@ export const createProduct = (data: {
     updatedAt: new Date().toISOString(),
   };
 
+  newProduct.companyId = currentCompanyId();
   products.push(newProduct);
   const initialInventoryItem = getOrCreateInventoryItem(newProduct, newProduct.warehouseId, newProduct.binLocation);
   initialInventoryItem.qtyOnHand = newProduct.stock;
@@ -1111,13 +1138,13 @@ export const createSaleTransaction = (
       throw new Error(`Invalid quantity ${item.quantity} for product ID ${item.productId}`);
     }
 
-    const product = products.find((p) => p.id === item.productId && p.isActive);
+    const product = companyProduct((p) => p.id === item.productId && p.isActive);
     if (!product) {
       throw new Error(`Product not found: ID ${item.productId}`);
     }
 
     const available = getAvailableStock(product);
-    if (item.quantity > available) {
+    if (isPolicyEnforced('negative-inventory') && item.quantity > available) {
       throw new Error(
         `Insufficient stock for ${product.name} (SKU: ${product.sku}). Requested: ${item.quantity}, Available: ${available}`
       );
@@ -1126,7 +1153,7 @@ export const createSaleTransaction = (
 
   const receiptNumber = `REC-${Date.now().toString().slice(-6)}`;
   const subtotal = items.reduce((total, item) => {
-    const product = products.find((candidate) => candidate.id === item.productId)!;
+    const product = companyProduct((candidate) => candidate.id === item.productId)!;
     return total + product.price * item.quantity;
   }, 0);
   const discountPercent = options?.discountPercent ?? 0;
@@ -1143,7 +1170,7 @@ export const createSaleTransaction = (
   }
 
   for (const item of items) {
-    const product = products.find((p) => p.id === item.productId)!;
+    const product = companyProduct((p) => p.id === item.productId)!;
     const allocations = consumeAvailableStock(product, item.quantity);
     product.updatedAt = new Date().toISOString();
 
@@ -1172,12 +1199,14 @@ export const createSaleTransaction = (
         binLocation: allocation.binCode,
       };
 
+      movement.companyId = currentCompanyId();
       stockMovements.unshift(movement);
       movements.push(movement);
     }
   }
 
-  const vatAmount = Number(((finalTotal * 15) / 115).toFixed(2));
+  const vatRate = getCurrentPolicy().vatRate;
+  const vatAmount = Number(((finalTotal * vatRate) / (100 + vatRate)).toFixed(2));
   const netSubtotal = Number((finalTotal - vatAmount).toFixed(2));
 
   const change = Number(Math.max(0, tender - finalTotal).toFixed(2));
@@ -1195,11 +1224,12 @@ export const createSaleTransaction = (
     tenderAmount: tender,
     changeAmount: change,
     cashierName: options?.cashierName ?? 'Cashier Staff',
-    cashierEmployeeId: options?.cashierEmployeeId ?? 'EMP-CSH-201',
+    cashierEmployeeId: options?.cashierEmployeeId ?? 'CSH-201',
     createdAt: new Date().toISOString(),
     notes: options?.notes,
   };
 
+  receipt.companyId = currentCompanyId();
   salesReceipts.unshift(receipt);
   return { receipt, movements };
 };
@@ -1219,7 +1249,7 @@ export const createReturn = (data: {
     throw new Error('Return quantity must be a positive integer');
   }
 
-  const product = products.find((p) => p.id === productId);
+  const product = companyProduct((p) => p.id === productId);
   if (!product) {
     throw new Error(`Product not found for return: ID ${productId}`);
   }
@@ -1243,6 +1273,7 @@ export const createReturn = (data: {
     binLocation: product.binLocation,
   };
 
+  movement.companyId = currentCompanyId();
   stockMovements.unshift(movement);
 
   return {
@@ -1266,7 +1297,7 @@ export const createReceiving = (
     throw new Error('Receiving quantity must be a positive integer');
   }
 
-  const product = products.find((p) => p.id === productId);
+  const product = companyProduct((p) => p.id === productId);
   if (!product) {
     throw new Error(`Product not found for receiving: ID ${productId}`);
   }
@@ -1289,6 +1320,7 @@ export const createReceiving = (
     binLocation: receivingBinCode,
   };
 
+  movement.companyId = currentCompanyId();
   stockMovements.unshift(movement);
 
   return {
@@ -1308,7 +1340,7 @@ export const recordCycleCount = (data: {
   const processedItems: CycleCountEntry['items'] = [];
 
   for (const entry of data.items) {
-    const product = products.find((p) => p.id === entry.productId);
+    const product = companyProduct((p) => p.id === entry.productId);
     if (!product) continue;
 
     const location = getOrCreateInventoryItem(product, data.warehouseId, data.binCode);
@@ -1349,12 +1381,14 @@ export const recordCycleCount = (data: {
         binLocation: data.binCode,
       };
 
+      movement.companyId = currentCompanyId();
       stockMovements.unshift(movement);
     }
   }
 
   const cycleCountRecord: CycleCountEntry = {
     id: cycleCounts.length + 1,
+    companyId: currentCompanyId(),
     auditNumber,
     warehouseId: data.warehouseId,
     binCode: data.binCode,
@@ -1379,7 +1413,7 @@ export const createOnlineOrder = (data: {
   }
 
   for (const item of data.items) {
-    const product = products.find((p) => p.id === item.productId && p.isActive);
+    const product = companyProduct((p) => p.id === item.productId && p.isActive);
     if (!product) {
       throw new Error(`Product ID ${item.productId} not found`);
     }
@@ -1393,7 +1427,7 @@ export const createOnlineOrder = (data: {
   let total = 0;
 
   for (const item of data.items) {
-    const product = products.find((p) => p.id === item.productId)!;
+    const product = companyProduct((p) => p.id === item.productId)!;
     reserveAvailableStock(product, item.quantity);
 
     const lineTotal = Number((product.price * item.quantity).toFixed(2));
@@ -1422,12 +1456,13 @@ export const createOnlineOrder = (data: {
     shippingAddress: data.shippingAddress || 'Standard Delivery Address',
   };
 
+  (newOrder as CustomerOrder & { companyId?: string }).companyId = currentCompanyId();
   customerOrders.unshift(newOrder);
   return newOrder;
 };
 
 export const commitReservedOrder = (orderId: number): CustomerOrder => {
-  const order = customerOrders.find((o) => o.id === orderId);
+  const order = customerOrders.find((o) => belongsToCompany(o.companyId) && o.id === orderId);
   if (!order) {
     throw new Error(`Order ${orderId} not found`);
   }
@@ -1437,13 +1472,14 @@ export const commitReservedOrder = (orderId: number): CustomerOrder => {
   }
 
   for (const item of order.items) {
-    const product = products.find((p) => p.id === item.productId);
+    const product = companyProduct((p) => p.id === item.productId);
     if (product) {
       const allocations = consumeReservedStock(product, item.quantity);
       product.updatedAt = new Date().toISOString();
 
       for (const allocation of allocations) {
         stockMovements.unshift({
+          companyId: currentCompanyId(),
           id: stockMovements.length + 1,
           productId: product.id,
           sku: product.sku,
@@ -1466,7 +1502,7 @@ export const commitReservedOrder = (orderId: number): CustomerOrder => {
 };
 
 export const releaseReservedOrder = (orderId: number): CustomerOrder => {
-  const order = customerOrders.find((o) => o.id === orderId);
+  const order = customerOrders.find((o) => belongsToCompany(o.companyId) && o.id === orderId);
   if (!order) {
     throw new Error(`Order ${orderId} not found`);
   }
@@ -1476,7 +1512,7 @@ export const releaseReservedOrder = (orderId: number): CustomerOrder => {
   }
 
   for (const item of order.items) {
-    const product = products.find((p) => p.id === item.productId);
+    const product = companyProduct((p) => p.id === item.productId);
     if (product) {
       releaseReservedStock(product, item.quantity);
       product.updatedAt = new Date().toISOString();
@@ -1499,7 +1535,7 @@ export const getDashboardSummary = () => {
   const inventoryRetailValue = snapshots.reduce((sum, p) => sum + p.stock * p.price, 0);
 
   const todayIso = new Date().toISOString().slice(0, 10);
-  const todayReceipts = salesReceipts.filter((r) => r.createdAt.slice(0, 10) === todayIso);
+  const todayReceipts = salesReceipts.filter((r) => belongsToCompany(r.companyId) && r.createdAt.slice(0, 10) === todayIso);
   const dailySales = todayReceipts.reduce((sum, r) => sum + r.total, 0) || 1667.45;
   const grossMarginPct = inventoryRetailValue > 0
     ? Number((((inventoryRetailValue - inventoryCostValue) / inventoryRetailValue) * 100).toFixed(1))
@@ -1514,7 +1550,7 @@ export const getDashboardSummary = () => {
     inventoryCostValue: Number(inventoryCostValue.toFixed(2)),
     inventoryRetailValue: Number(inventoryRetailValue.toFixed(2)),
     grossMarginPct,
-    movementCount: stockMovements.length,
+    movementCount: stockMovements.filter((movement) => belongsToCompany(movement.companyId)).length,
     topProducts: snapshots.slice(0, 5).map((p) => ({
       name: p.name,
       sku: p.sku,

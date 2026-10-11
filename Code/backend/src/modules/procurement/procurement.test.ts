@@ -81,7 +81,7 @@ test('procurement: receivePurchaseOrder handles partial receiving then full rece
   sendPurchaseOrder(order.id);
 
   // Partial receiving: 8 of 20
-  const partial = receivePurchaseOrder(order.id, 8, 'Hlonela Dlamini (EMP-WRH-301)', 'CPT-02', 'T-20');
+  const partial = receivePurchaseOrder(order.id, 8, 'Hlonela Dlamini (WRH-301)', 'CPT-02', 'T-20');
   assert.equal(partial.status, 'PARTIALLY_RECEIVED');
   assert.equal(partial.receivedQuantity, 8);
   assert.equal(partial.remainingQuantity, 12);
@@ -92,7 +92,7 @@ test('procurement: receivePurchaseOrder handles partial receiving then full rece
   assert.throws(() => receivePurchaseOrder(order.id, 13), /cannot exceed outstanding quantity/);
 
   // Remaining receiving: 12 of 12
-  const full = receivePurchaseOrder(order.id, 12, 'Hlonela Dlamini (EMP-WRH-301)');
+  const full = receivePurchaseOrder(order.id, 12, 'Hlonela Dlamini (WRH-301)');
   assert.equal(full.status, 'RECEIVED');
   assert.equal(full.receivedQuantity, 20);
   assert.equal(full.remainingQuantity, 0);

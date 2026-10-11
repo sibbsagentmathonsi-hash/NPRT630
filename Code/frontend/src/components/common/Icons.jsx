@@ -35,6 +35,7 @@ export const Icon = ({ name, size = 18, className = '' }) => {
         </svg>
       );
     case 'users':
+    case 'user-plus':
       return (
         <svg {...props}>
           <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -44,6 +45,8 @@ export const Icon = ({ name, size = 18, className = '' }) => {
         </svg>
       );
     case 'box':
+    case 'building':
+    case 'layers':
       return (
         <svg {...props}>
           <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />

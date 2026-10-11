@@ -58,14 +58,14 @@ test('production disables demo sign-in and applies the configured CORS allowlist
     const quickSwitchResponse = await fetch(`${baseUrl}/api/auth/quick-switch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ employeeId: 'EMP-CSH-201' }),
+      body: JSON.stringify({ employeeId: 'CSH-201' }),
     });
     assert.equal(quickSwitchResponse.status, 404);
 
     const firstPasswordWithoutLoginResponse = await fetch(`${baseUrl}/api/auth/set-first-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ employeeId: 'EMP-ADM-001', newPassword: 'NewStrongPassword123!' }),
+      body: JSON.stringify({ employeeId: 'ADM-001', newPassword: 'NewStrongPassword123!' }),
     });
     assert.equal(firstPasswordWithoutLoginResponse.status, 401);
 

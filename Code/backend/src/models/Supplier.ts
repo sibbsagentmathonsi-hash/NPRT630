@@ -4,6 +4,7 @@ import { sequelize } from '../config/sequelize';
 
 export interface SupplierAttributes {
   id: number;
+  companyId?: string;
   name: string;
   contact: string;
   leadTimeDays: number;
@@ -14,6 +15,7 @@ export type SupplierCreationAttributes = Optional<SupplierAttributes, 'id'>;
 
 export class SupplierModel extends Model<SupplierAttributes, SupplierCreationAttributes> implements SupplierAttributes {
   public id!: number;
+  public companyId?: string;
   public name!: string;
   public contact!: string;
   public leadTimeDays!: number;
@@ -27,6 +29,7 @@ SupplierModel.init(
       primaryKey: true,
       autoIncrement: true,
     },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     name: {
       type: DataTypes.STRING,
       allowNull: false,

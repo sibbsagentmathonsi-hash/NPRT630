@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icon } from '../common/Icons';
 
-export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify }) => {
+export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'overview' }) => {
   const [activeSubTab, setActiveSubTab] = useState('overview'); // 'overview' | 'forecasting' | 'suppliers' | 'catalog'
+  useEffect(() => setActiveSubTab(['overview', 'forecasting', 'suppliers', 'catalog'].includes(initialTab) ? initialTab : 'overview'), [initialTab]);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [catalogSearch, setCatalogSearch] = useState('');
   const [generatingPo, setGeneratingPo] = useState(false);
@@ -152,7 +153,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const updateProductField = (field, value) => setProductForm((current) => ({ ...current, [field]: value }));
 
   return (
-    <div style={{ padding: '1.5rem', maxWidth: '1400px', margin: '0 auto' }}>
+      <div className="workspace-page" style={{ padding: '1.5rem', maxWidth: '1400px', margin: '0 auto' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
         <div>
@@ -178,7 +179,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
       </div>
 
       {/* Sub-Navigation Tabs */}
-      <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', marginBottom: '1.5rem', paddingBottom: '0.5rem' }}>
+      <div className="workspace-subnav" style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', marginBottom: '1.5rem', paddingBottom: '0.5rem' }}>
         <button className={`btn ${activeSubTab === 'overview' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('overview')}>
           <Icon name="trending-up" size={16} /> Executive KPI Dashboard
         </button>

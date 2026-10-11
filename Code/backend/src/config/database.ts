@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import { hydrateUsers, users, validatePasswordStrength } from '../modules/auth/auth';
 import { inventoryItems } from '../inventory';
 import { sequelize } from './sequelize';
+import { DEFAULT_COMPANY_ID, companies, defaultCompany } from './tenancy';
+import { hydratePolicies } from './policies';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Client } = require('pg');
@@ -71,23 +73,41 @@ export const connectDatabase = async (): Promise<boolean> => {
       CycleCountModel,
       InventoryItemModel,
       WarehouseModel,
+      CompanyModel,
+      CompanyPolicyModel,
     } = domainModels;
 
     // Step 3: Authenticate and synchronize tables
     await sequelize.authenticate();
+    await CompanyModel.sync({ alter: true });
+    await CompanyModel.findOrCreate({ where: { id: DEFAULT_COMPANY_ID }, defaults: defaultCompany as any });
+    const storedCompanies = await CompanyModel.findAll();
+    companies.splice(0, companies.length, ...storedCompanies.map((record) => record.toJSON() as any));
+    await CompanyPolicyModel.sync({ alter: true });
+    hydratePolicies((await CompanyPolicyModel.findAll()).map((record) => record.toJSON() as any));
     await ProductModel.sync({ alter: true });
     await SupplierModel.sync({ alter: true });
     await StockMovementModel.sync({ alter: true });
     await RoleModel.sync({ alter: true });
     await UserModel.sync({ alter: true });
+      await UserModel.update({ isPlatformAdmin: true }, { where: { employeeId: 'ADM-001', companyId: DEFAULT_COMPANY_ID } });
+    if (process.env.NODE_ENV !== 'production' && process.env.ADMIN_EMAIL?.trim()) {
+      await UserModel.update(
+        {
+          email: process.env.ADMIN_EMAIL.trim().toLowerCase(),
+          passwordHash: await bcrypt.hash(process.env.ADMIN_PASSWORD || '@Arg3nt2003', 12),
+        },
+        { where: { employeeId: 'ADM-001', companyId: DEFAULT_COMPANY_ID } }
+      );
+    }
     await AuditLogModel.sync({ alter: true });
     await WarehouseModel.sync({ alter: true });
     await InventoryItemModel.sync({ alter: true });
     await CycleCountModel.sync({ alter: true });
 
     await WarehouseModel.bulkCreate([
-      { id: 'JHB-01', name: 'Johannesburg Central Distribution Hub', city: 'Johannesburg, Gauteng', binsCount: 48, activeSkus: 8, capacityPct: 78, supervisor: 'Jayden Khoza (EMP-MGR-101)', status: 'OPERATIONAL' },
-      { id: 'CPT-02', name: 'Cape Town Coastal Fulfillment Facility', city: 'Cape Town, Western Cape', binsCount: 36, activeSkus: 5, capacityPct: 62, supervisor: 'Hlonela Dlamini (EMP-WRH-301)', status: 'OPERATIONAL' },
+      { id: 'JHB-01', name: 'Johannesburg Central Distribution Hub', city: 'Johannesburg, Gauteng', binsCount: 48, activeSkus: 8, capacityPct: 78, supervisor: 'Jayden Khoza (MGR-101)', status: 'OPERATIONAL' },
+      { id: 'CPT-02', name: 'Cape Town Coastal Fulfillment Facility', city: 'Cape Town, Western Cape', binsCount: 36, activeSkus: 5, capacityPct: 62, supervisor: 'Hlonela Dlamini (WRH-301)', status: 'OPERATIONAL' },
       { id: 'DBN-01', name: 'Durban Port Logistics Depot', city: 'Durban, KwaZulu-Natal', binsCount: 24, activeSkus: 3, capacityPct: 45, supervisor: 'Unassigned', status: 'STANDBY' },
     ], { ignoreDuplicates: true });
     await SaleModel.sync({ alter: true });
@@ -116,7 +136,9 @@ export const connectDatabase = async (): Promise<boolean> => {
         }
 
         await UserModel.create({
-          employeeId: 'EMP-ADM-001',
+          companyId: DEFAULT_COMPANY_ID,
+          isPlatformAdmin: true,
+          employeeId: 'ADM-001',
           name: process.env.ADMIN_NAME?.trim() || 'System Administrator',
           email: adminEmail,
           role: 'ADMIN',
@@ -133,6 +155,8 @@ export const connectDatabase = async (): Promise<boolean> => {
         await UserModel.findOrCreate({
           where: { employeeId: user.employeeId },
           defaults: {
+            companyId: user.companyId || DEFAULT_COMPANY_ID,
+            isPlatformAdmin: user.isPlatformAdmin,
             employeeId: user.employeeId,
             name: user.name,
             email: user.email,

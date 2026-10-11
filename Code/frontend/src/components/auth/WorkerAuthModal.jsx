@@ -1,8 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { Icon } from '../common/Icons';
+import { BrandLogo } from '../common/BrandLogo';
+
+const readResponseJson = async (response) => {
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: 'The server returned an unexpected response (' + response.status + ').' };
+  }
+};
 
 export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [], apiBase, accessMode = 'worker' }) => {
-  const [authTab, setAuthTab] = useState('login'); // 'login' | 'verify-email'
+  const [authTab, setAuthTab] = useState('email'); // 'email' | 'login' | 'verify-email'
   const [isFirstTimeMode, setIsFirstTimeMode] = useState(false);
   const [employeeId, setEmployeeId] = useState('');
   const [password, setPassword] = useState('');
@@ -13,6 +24,9 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
   const [loading, setLoading] = useState(false);
   const [setupSuccessUser, setSetupSuccessUser] = useState(null);
   const [setupToken, setSetupToken] = useState('');
+  const [passwordPolicy, setPasswordPolicy] = useState({ minimumLength: 8, requireUppercase: true, requireLowercase: true, requireNumber: true, requireSpecial: true });
+  const [companyChoices, setCompanyChoices] = useState([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState('');
 
   // Email Confirmation OTP State
   const [emailVerifyIdentifier, setEmailVerifyIdentifier] = useState('');
@@ -32,7 +46,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
 
   useEffect(() => {
     if (!isOpen) {
-      setAuthTab('login');
+      setAuthTab('email');
       setIsFirstTimeMode(false);
       setEmployeeId('');
       setPassword('');
@@ -45,9 +59,18 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       setEmailVerifyIdentifier('');
       setEmailVerifyCode('');
       setEmailSentData(null);
+      setCompanyChoices([]);
+      setSelectedCompanyId('');
       setCodeCountdown(0);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    const policyUrl = `${apiBase}/api/auth/policy${selectedCompanyId ? `?companyId=${encodeURIComponent(selectedCompanyId)}` : ''}`;
+    fetch(policyUrl).then((res) => (res.ok ? res.json() : null)).then((data) => {
+      if (data?.password) setPasswordPolicy(data.password);
+    }).catch(() => undefined);
+  }, [apiBase, selectedCompanyId]);
 
   if (!isOpen) return null;
 
@@ -58,13 +81,56 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     : 'Enter your Employee ID to log in to your role-based terminal';
   const loginButtonLabel = isAdminAccess ? 'Sign In to Admin Portal' : 'Sign In to Terminal';
 
+  const handleEmailLookup = async (e) => {
+    e.preventDefault();
+    setError('');
+    setInfoMessage('');
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${apiBase}/api/auth/lookup-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailVerifyIdentifier || employeeId, companyId: selectedCompanyId || undefined }),
+      });
+      const data = await readResponseJson(res);
+      if (!res.ok) {
+        const lookupError = new Error(data.error || 'Could not find an account for that email');
+        lookupError.companies = data.companies;
+        throw lookupError;
+      }
+
+      const user = data.user;
+      setSelectedCompanyId(user.companyId || selectedCompanyId);
+      if (isAdminAccess && user.role !== 'ADMIN') throw new Error('That email belongs to a worker account. Use the worker portal.');
+      if (!isAdminAccess && user.role === 'ADMIN') throw new Error('Admin accounts must use the admin portal.');
+
+      setSetupSuccessUser(user);
+      setEmployeeId(user.employeeId);
+      setEmailVerifyIdentifier(user.email);
+
+      if (!user.emailVerified) {
+        setAuthTab('verify-email');
+        await handleSendCode(user.email);
+      } else {
+        setAuthTab('login');
+        setInfoMessage(user.isFirstLogin ? 'Email confirmed. Enter the temporary password supplied by your administrator to begin setup.' : 'Email confirmed. Enter your password to continue.');
+      }
+    } catch (err) {
+      if (err?.companies) setCompanyChoices(err.companies);
+      setError(err.message || 'Unable to reach the account service. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Password policy evaluation
   const passChecks = {
-    length: newPassword.length >= 8,
-    upper: /[A-Z]/.test(newPassword),
-    lower: /[a-z]/.test(newPassword),
-    number: /[0-9]/.test(newPassword),
-    special: /[!@#$%^&*(),.?":{}|<>]/.test(newPassword),
+    length: newPassword.length >= passwordPolicy.minimumLength,
+    upper: !passwordPolicy.requireUppercase || /[A-Z]/.test(newPassword),
+    lower: !passwordPolicy.requireLowercase || /[a-z]/.test(newPassword),
+    number: !passwordPolicy.requireNumber || /[0-9]/.test(newPassword),
+    special: !passwordPolicy.requireSpecial || /[!@#$%^&*(),.?":{}|<>]/.test(newPassword),
     match: newPassword.length > 0 && newPassword === confirmPassword,
   };
 
@@ -81,7 +147,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       const res = await fetch(`${apiBase}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ employeeId, password }),
+        body: JSON.stringify({ employeeId, password, companyId: selectedCompanyId || setupSuccessUser?.companyId }),
       });
 
       const data = await res.json();
@@ -223,6 +289,8 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       setInfoMessage('Email address verified successfully!');
       if (setupSuccessUser) {
         setSetupSuccessUser({ ...setupSuccessUser, emailVerified: true });
+        setAuthTab('login');
+        setInfoMessage(setupSuccessUser.isFirstLogin ? 'Email confirmed. Enter the temporary password supplied by your administrator to begin setup.' : 'Email confirmed. Enter your password to continue.');
       } else if (data.user && data.token) {
         if (isAdminAccess && data.user.role !== 'ADMIN') {
           throw new Error('Only administrator accounts can enter the admin portal.');
@@ -246,39 +314,25 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
 
   return (
     <div className="modal-overlay">
-      <div className="modal-content" style={{ maxWidth: '520px' }}>
+      <div className={`modal-content auth-modal ${isAdminAccess ? 'auth-modal-admin' : ''}`} style={{ maxWidth: '520px' }}>
         <button type="button" className="modal-close" onClick={onClose} aria-label="Close login dialog" title="Close">
           <Icon name="x" size={18} />
         </button>
         {!isFirstTimeMode ? (
           <div>
-            {/* Top Navigation Tabs */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
-              <button
-                type="button"
-                className={`btn ${authTab === 'login' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                style={{ flex: 1 }}
-                onClick={() => {
-                  setAuthTab('login');
-                  setError('');
-                  setInfoMessage('');
-                }}
-              >
-                <Icon name="lock" size={14} /> {isAdminAccess ? 'Admin Login' : 'Worker Login'}
-              </button>
-              <button
-                type="button"
-                className={`btn ${authTab === 'verify-email' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                style={{ flex: 1 }}
-                onClick={() => {
-                  setAuthTab('verify-email');
-                  setError('');
-                  setInfoMessage('');
-                  if (employeeId) setEmailVerifyIdentifier(employeeId);
-                }}
-              >
-                <Icon name="check-circle" size={14} /> Confirm Email (OTP)
-              </button>
+            <div className="auth-modal-header">
+              <BrandLogo size={42} variant={isAdminAccess ? 'admin' : 'worker'} />
+              <div>
+                <div className="auth-modal-kicker">SyncStock / secure access</div>
+                <div className="auth-modal-title">{isAdminAccess ? 'Admin workspace' : 'Worker workspace'}</div>
+                <div className="auth-modal-subtitle">Use your company credentials to continue.</div>
+              </div>
+            </div>
+            <div className="auth-step-indicator">
+              <span className={authTab === 'email' ? 'is-active' : 'is-complete'}>1&nbsp; Email</span>
+              <span className={authTab === 'verify-email' ? 'is-active' : authTab === 'login' ? 'is-complete' : ''}>2&nbsp; Confirm</span>
+              <span className={authTab === 'login' ? 'is-active' : ''}>3&nbsp; Continue</span>
+              {authTab !== 'email' && <button type="button" className="auth-change-email" onClick={() => { setAuthTab('email'); setError(''); setInfoMessage(''); setSetupSuccessUser(null); setEmployeeId(''); setPassword(''); setEmailVerifyIdentifier(''); setEmailSentData(null); }}>Change email</button>}
             </div>
 
             {error && (
@@ -313,10 +367,31 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
               </div>
             )}
 
-            {/* TAB 1: STANDARD WORKER LOGIN */}
+            {/* STEP 1: EMAIL LOOKUP */}
+            {authTab === 'email' && (
+              <div>
+                <div className="auth-section-heading" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+                  <div className="auth-section-icon" style={{ background: 'var(--primary-light)', color: 'var(--primary)' }}><Icon name="user" size={24} /></div>
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Find your account</h2>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Enter your work email. We’ll check your verification status before asking for a password.</p>
+                </div>
+                <form onSubmit={handleEmailLookup} autoComplete="off">
+                  <div className="form-group">
+                    <label className="form-label">Work email</label>
+                    <input type="email" className="form-input form-input-mono auth-input auth-employee-input" autoComplete="email" placeholder="name@company.com" value={emailVerifyIdentifier} onChange={(e) => setEmailVerifyIdentifier(e.target.value)} required />
+                    {companyChoices.length > 0 && <select className="form-input auth-input" value={selectedCompanyId} onChange={(e) => setSelectedCompanyId(e.target.value)} required><option value="">Select your company</option>{companyChoices.map((company) => <option value={company.id} key={company.id}>{company.tradingName}</option>)}</select>}
+                  </div>
+                  <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+                    {loading ? 'Checking account...' : 'Continue with email'} <Icon name="arrow-left" size={15} className="auth-arrow-right" />
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* STEP 3: STANDARD PASSWORD LOGIN */}
             {authTab === 'login' && (
               <div>
-                <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+                <div className="auth-section-heading" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
                   <div
                     style={{
                       width: '46px',
@@ -340,26 +415,15 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
 
                 <form onSubmit={handleLogin} autoComplete="off">
                   <div className="form-group">
-                    <label className="form-label">Employee ID / Email</label>
-                    <input
-                      type="text"
-                      className="form-input form-input-mono"
-                      autoComplete="off"
-                      placeholder={isAdminAccess ? 'e.g. EMP-ADM-001' : 'e.g. EMP-MGR-101, EMP-CSH-201'}
-                      value={employeeId}
-                      onChange={(e) => {
-                        setEmployeeId(e.target.value);
-                        setEmailVerifyIdentifier(e.target.value);
-                      }}
-                      required
-                    />
+                    <label className="form-label">Verified account</label>
+                    <div className="auth-account-chip"><span className="employee-id-badge form-input-mono">{emailVerifyIdentifier}</span><span>{setupSuccessUser?.employeeId}</span></div>
                   </div>
 
                   <div className="form-group">
                     <label className="form-label">Password</label>
                     <input
                       type="password"
-                      className="form-input"
+                      className="form-input auth-input"
                       autoComplete="new-password"
                       placeholder="••••••••"
                       value={password}
@@ -411,7 +475,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                     <input
                       type="text"
                       className="form-input form-input-mono"
-                      placeholder="e.g. EMP-NEW-501 or kegoikantsekego703@gmail.com"
+                      placeholder="e.g. NEW-501 or kegoikantsekego703@gmail.com"
                       value={emailVerifyIdentifier}
                       onChange={(e) => setEmailVerifyIdentifier(e.target.value)}
                     />
@@ -644,7 +708,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                 }}
               >
                 <div style={{ color: passChecks.length ? 'var(--success)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Icon name={passChecks.length ? 'check' : 'minus'} size={14} /> At least 8 characters
+                  <Icon name={passChecks.length ? 'check' : 'minus'} size={14} /> At least {passwordPolicy.minimumLength} characters
                 </div>
                 <div style={{ color: passChecks.upper ? 'var(--success)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <Icon name={passChecks.upper ? 'check' : 'minus'} size={14} /> 1 Uppercase (A-Z)

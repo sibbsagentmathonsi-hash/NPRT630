@@ -3,6 +3,7 @@ import { sequelize } from '../config/sequelize';
 
 export interface ProductAttributes {
   id: number;
+  companyId?: string;
   sku: string;
   barcode: string;
   name: string;
@@ -25,6 +26,7 @@ export type ProductCreationAttributes = Optional<ProductAttributes, 'id'>;
 
 export class ProductModel extends Model<ProductAttributes, ProductCreationAttributes> implements ProductAttributes {
   public id!: number;
+  public companyId?: string;
   public sku!: string;
   public barcode!: string;
   public name!: string;
@@ -50,10 +52,10 @@ ProductModel.init(
       primaryKey: true,
       autoIncrement: true,
     },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
     sku: {
       type: DataTypes.STRING(50),
       allowNull: false,
-      unique: true,
     },
     barcode: {
       type: DataTypes.STRING(50),
@@ -132,6 +134,7 @@ ProductModel.init(
     sequelize,
     tableName: 'products',
     timestamps: true,
+    indexes: [{ unique: true, fields: ['companyId', 'sku'] }],
   }
 );
 

@@ -23,13 +23,15 @@ import {
   type UserRole,
 } from './auth';
 
-test('admin can log in with sibbs.agentmathonsi@gmail.com and EMP-ADM-001', () => {
-  const byEmail = authenticateUser('sibbs.agentmathonsi@gmail.com', '@Arg3nt2003');
+const testAdminPassword = process.env.ADMIN_PASSWORD || '@Arg3nt2003';
+
+test('admin can log in with sibbs.agentmathonsi@gmail.com and ADM-001', () => {
+  const byEmail = authenticateUser('sibbs.agentmathonsi@gmail.com', testAdminPassword);
   assert.ok(byEmail);
-  assert.equal(byEmail.employeeId, 'EMP-ADM-001');
+  assert.equal(byEmail.employeeId, 'ADM-001');
   assert.equal(byEmail.role, 'ADMIN');
 
-  const byId = authenticateUser('EMP-ADM-001', '@Arg3nt2003');
+  const byId = authenticateUser('ADM-001', testAdminPassword);
   assert.ok(byId);
   assert.equal(byId.email, 'sibbs.agentmathonsi@gmail.com');
 });
@@ -38,19 +40,19 @@ test('authenticateUser rejects incorrect password and nonexistent user', () => {
   const wrongPass = authenticateUser('sibbs.agentmathonsi@gmail.com', 'WrongPassword123!');
   assert.equal(wrongPass, undefined);
 
-  const wrongUser = authenticateUser('nonexistent@domain.com', '@Arg3nt2003');
+  const wrongUser = authenticateUser('nonexistent@domain.com', testAdminPassword);
   assert.equal(wrongUser, undefined);
 });
 
 test('generateToken returns a usable signed token for a user', () => {
-  const admin = authenticateUser('EMP-ADM-001', '@Arg3nt2003');
+  const admin = authenticateUser('ADM-001', testAdminPassword);
   assert.ok(admin);
   const user = toPublicUser(admin);
   const token = generateToken(user);
   assert.ok(token.length > 20);
 
   const payload = verifyToken(token);
-  assert.equal(payload.employeeId, 'EMP-ADM-001');
+  assert.equal(payload.employeeId, 'ADM-001');
   assert.equal(payload.email, 'sibbs.agentmathonsi@gmail.com');
   assert.equal(payload.role, 'ADMIN');
 });
@@ -100,7 +102,7 @@ test('registerEmployee generates sector-specific IDs and sets initial state', ()
     adminActor: 'sibbs.agentmathonsi@gmail.com',
   });
   assert.equal(reg1.success, true);
-  assert.ok(reg1.user?.employeeId.startsWith('EMP-MGR-'));
+  assert.ok(reg1.user?.employeeId.startsWith('MGR-'));
   assert.equal(reg1.user?.status, 'PENDING_SETUP');
   assert.equal(reg1.user?.isFirstLogin, true);
 
@@ -112,7 +114,7 @@ test('registerEmployee generates sector-specific IDs and sets initial state', ()
     adminActor: 'sibbs.agentmathonsi@gmail.com',
   });
   assert.equal(reg2.success, true);
-  assert.ok(reg2.user?.employeeId.startsWith('EMP-CSH-'));
+  assert.ok(reg2.user?.employeeId.startsWith('CSH-'));
 
   // Disallow duplicate email
   assert.throws(
@@ -167,7 +169,7 @@ test('setFirstPassword accepts reset-pending accounts when their status is alrea
 });
 
 test('toPublicUser strips password field', () => {
-  const user = authenticateUser('EMP-ADM-001', '@Arg3nt2003');
+  const user = authenticateUser('ADM-001', testAdminPassword);
   assert.ok(user);
   assert.ok('password' in user);
 
@@ -178,34 +180,34 @@ test('toPublicUser strips password field', () => {
 });
 
 test('sendEmailVerificationCode and verifyEmailCode workflow', () => {
-  const sendRes = sendEmailVerificationCode('EMP-ADM-001');
+  const sendRes = sendEmailVerificationCode('ADM-001');
   assert.equal(sendRes.success, true);
   assert.ok(sendRes.code && sendRes.code.length === 6);
   assert.equal(sendRes.email, 'sibbs.agentmathonsi@gmail.com');
 
   // Wrong code fails
-  const wrongRes = verifyEmailCode('EMP-ADM-001', '000000');
+  const wrongRes = verifyEmailCode('ADM-001', '000000');
   assert.equal(wrongRes.success, false);
 
   // Correct code succeeds
-  const verifyRes = verifyEmailCode('EMP-ADM-001', sendRes.code);
+  const verifyRes = verifyEmailCode('ADM-001', sendRes.code);
   assert.equal(verifyRes.success, true);
   assert.equal(verifyRes.user?.emailVerified, true);
 });
 
 test('enrollMfa and verifyMfa validate authentic TOTP codes', () => {
-  const enrollment = enrollMfa('EMP-ADM-001');
+  const enrollment = enrollMfa('ADM-001');
   assert.ok(enrollment);
   assert.ok(enrollment.secret);
   assert.ok(enrollment.uri.startsWith('otpauth://totp/'));
 
   // Invalid 6-digit code fails
-  const invalid = verifyMfa('EMP-ADM-001', '999999');
+  const invalid = verifyMfa('ADM-001', '999999');
   assert.equal(invalid, undefined);
 
   // Valid TOTP generated with secret succeeds
   const validOtp = generateSync({ secret: enrollment.secret });
-  const verifiedUser = verifyMfa('EMP-ADM-001', validOtp);
+  const verifiedUser = verifyMfa('ADM-001', validOtp);
   assert.ok(verifiedUser);
   assert.equal(verifiedUser.mfaEnabled, true);
 });

@@ -15,12 +15,15 @@ import {
   SaleModel,
   UserModel,
   WarehouseModel,
+  CompanyPolicyModel,
 } from './models/DomainModels';
 import { ProductModel } from './models/Product';
 import { StockMovementModel } from './models/StockMovement';
 import { inventoryItems, stockMovements, type CustomerOrder, type CycleCountEntry, type SaleReceipt, type StockMovement } from './inventory';
 import type { PurchaseOrderView } from './modules/procurement/procurement';
 import type { PublicUser, User } from './modules/auth/auth';
+import { currentCompanyId } from './config/tenancy';
+import type { SystemPolicy } from './config/policies';
 
 let databaseReady = false;
 
@@ -30,9 +33,21 @@ export const setDatabaseReady = (ready: boolean): void => {
 
 export const isDatabaseReady = (): boolean => databaseReady;
 
+export const persistCompanyPolicy = async (companyId: string, policy: SystemPolicy): Promise<void> => {
+  await withDatabase(async (transaction) => {
+    await CompanyPolicyModel.upsert({ companyId, configuration: policy }, { transaction });
+  });
+};
+
 const withDatabase = async <T>(operation: (transaction: Transaction) => Promise<T>): Promise<T | undefined> => {
   if (!databaseReady) return undefined;
-  return sequelize.transaction(operation);
+  return sequelize.transaction(async (transaction) => {
+    await sequelize.query("SELECT set_config('app.company_id', ?, true)", {
+      replacements: [currentCompanyId()],
+      transaction,
+    });
+    return operation(transaction);
+  });
 };
 
 export const persistUser = async (user: User, passwordHash: string): Promise<void> => {
@@ -40,6 +55,8 @@ export const persistUser = async (user: User, passwordHash: string): Promise<voi
     await UserModel.upsert(
       {
         id: user.id,
+        companyId: user.companyId,
+        isPlatformAdmin: user.isPlatformAdmin,
         employeeId: user.employeeId,
         name: user.name,
         email: user.email,
@@ -62,6 +79,7 @@ const persistMovement = async (movement: StockMovement, transaction: Transaction
   await StockMovementModel.create(
     {
       id: movement.id,
+      companyId: movement.companyId ?? currentCompanyId(),
       productId: movement.productId,
       sku: movement.sku,
       type: movement.type,
@@ -78,7 +96,7 @@ const persistMovement = async (movement: StockMovement, transaction: Transaction
 };
 
 const persistProductStock = async (productId: number, stock: number, qtyReserved: number, transaction: Transaction): Promise<void> => {
-  await ProductModel.update({ stock, qtyReserved }, { where: { id: productId }, transaction });
+  await ProductModel.update({ stock, qtyReserved }, { where: { id: productId, companyId: currentCompanyId() }, transaction });
 };
 
 const persistInventoryItems = async (productIds: number[], transaction: Transaction): Promise<void> => {
@@ -203,6 +221,7 @@ export const persistCycleCount = async (
 
 export const persistProduct = async (product: {
   id: number;
+  companyId?: string;
   sku: string;
   barcode: string;
   name: string;
@@ -222,6 +241,7 @@ export const persistProduct = async (product: {
 }): Promise<void> => {
   await withDatabase(async (transaction) => {
     await ProductModel.upsert({
+      companyId: product.companyId ?? currentCompanyId(),
       id: product.id,
       sku: product.sku,
       barcode: product.barcode,
@@ -246,7 +266,7 @@ export const persistProduct = async (product: {
 
 export const persistUserVerification = async (employeeId: string): Promise<void> => {
   await withDatabase(async (transaction) => {
-    await UserModel.update({ emailVerified: true }, { where: { employeeId }, transaction });
+    await UserModel.update({ emailVerified: true }, { where: { employeeId, companyId: currentCompanyId() }, transaction });
   });
 };
 
@@ -265,19 +285,20 @@ export const persistUserState = async (user: User): Promise<void> => {
         mfaSecret: user.mfaSecret,
         lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
       },
-      { where: { id: user.id }, transaction }
+      { where: { id: user.id, companyId: user.companyId }, transaction }
     );
   });
 };
 
 export const removeUser = async (userId: number): Promise<void> => {
   await withDatabase(async (transaction) => {
-    await UserModel.destroy({ where: { id: userId }, transaction });
+    await UserModel.destroy({ where: { id: userId, companyId: currentCompanyId() }, transaction });
   });
 };
 
 export const persistAuditLog = async (log: {
   id: string;
+  companyId?: string;
   timestamp: string;
   actor: string;
   actorRole: string;
@@ -291,6 +312,7 @@ export const persistAuditLog = async (log: {
     await AuditLogModel.create(
       {
         id: log.id,
+        companyId: log.companyId ?? currentCompanyId(),
         timestamp: new Date(log.timestamp),
         actor: log.actor,
         actorRole: log.actorRole,
@@ -307,18 +329,19 @@ export const persistAuditLog = async (log: {
 
 export const getPersistedAuditLogs = async (): Promise<unknown[]> => {
   if (!databaseReady) return [];
-  const logs = await AuditLogModel.findAll({ order: [['timestamp', 'DESC']], limit: 500 });
+  const logs = await AuditLogModel.findAll({ where: { companyId: currentCompanyId() }, order: [['timestamp', 'DESC']], limit: 500 });
   return logs.map((log) => log.toJSON());
 };
 
 export const getWarehouses = async (): Promise<unknown[]> => {
   if (!databaseReady) return [];
-  const warehouses = await WarehouseModel.findAll({ order: [['id', 'ASC']] });
+  const warehouses = await WarehouseModel.findAll({ where: { companyId: currentCompanyId() }, order: [['id', 'ASC']] });
   return warehouses.map((warehouse) => warehouse.toJSON());
 };
 
 export const saveWarehouse = async (warehouse: {
   id: string;
+  companyId?: string;
   name: string;
   city: string;
   binsCount: number;
@@ -328,22 +351,23 @@ export const saveWarehouse = async (warehouse: {
   status: string;
 }): Promise<void> => {
   await withDatabase(async (transaction) => {
-    await WarehouseModel.upsert(warehouse, { transaction });
+    await WarehouseModel.upsert({ ...warehouse, companyId: warehouse.companyId ?? currentCompanyId() }, { transaction });
   });
 };
 
 export const deleteWarehouse = async (id: string): Promise<void> => {
   await withDatabase(async (transaction) => {
-    await WarehouseModel.destroy({ where: { id }, transaction });
+    await WarehouseModel.destroy({ where: { id, companyId: currentCompanyId() }, transaction });
   });
 };
 
 export const persistPurchaseOrder = async (order: PurchaseOrderView): Promise<void> => {
   await withDatabase(async (transaction) => {
     const [record] = await PurchaseOrderModel.findOrCreate({
-      where: { id: order.id },
+      where: { id: order.id, companyId: order.companyId ?? currentCompanyId() },
       defaults: {
         id: order.id,
+        companyId: order.companyId ?? currentCompanyId(),
         supplierId: order.supplierId,
         status: order.status,
         totalQuantity: order.quantity,
@@ -369,9 +393,10 @@ export const persistPurchaseOrder = async (order: PurchaseOrderView): Promise<vo
       { transaction }
     );
     await PurchaseOrderItemModel.findOrCreate({
-      where: { purchaseOrderId: record.id },
+      where: { purchaseOrderId: record.id, companyId: order.companyId ?? currentCompanyId() },
       defaults: {
         purchaseOrderId: record.id,
+        companyId: order.companyId ?? currentCompanyId(),
         sku: order.sku,
         itemName: order.itemName,
         quantity: order.quantity,
@@ -427,11 +452,11 @@ export const persistCustomerOrderStatus = async (
   await withDatabase(async (transaction) => {
     await CustomerOrderModel.update(
       { status: order.status, total: order.total, trackingNumber: order.trackingNumber, shippingAddress: order.shippingAddress },
-      { where: { orderNumber: order.orderNumber }, transaction }
+      { where: { orderNumber: order.orderNumber, companyId: order.companyId ?? currentCompanyId() }, transaction }
     );
     await InventoryReservationModel.update(
       { status: order.status === 'CANCELLED' ? 'RELEASED' : order.status === 'PAID' ? 'COMMITTED' : 'RESERVED' },
-      { where: { customerOrderId: order.id }, transaction }
+      { where: { customerOrderId: order.id, companyId: order.companyId ?? currentCompanyId() }, transaction }
     );
     for (const product of products) await persistProductStock(product.id, product.stock, product.qtyReserved, transaction);
     await persistInventoryItems(order.items.map((item) => item.productId), transaction);
