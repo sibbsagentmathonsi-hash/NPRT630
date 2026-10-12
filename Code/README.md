@@ -83,6 +83,7 @@ The project specifications also describe separately deployed microservices, data
 
 ## Project Documents
 
+- [Final project report (PDF)](../Documents/Final_Project_Report.pdf) compares the academic source documents with the current codebase and live demo, separating delivered, partial, undelivered, and undocumented implementation features.
 - [GitHub repository](https://github.com/sibbsagentmathonsi-hash/NPRT630) contains the project source.
 - [Repository overview](../README.md) summarizes the full project and its published contents.
 - [Problem statement](../Documents/PROJECT%20PROBLEM%20STATEMEN1.docx) covers the SME inventory problem, causes, business impact, and proposed value.

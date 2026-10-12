@@ -703,6 +703,7 @@ Start the compiled API with `npm.cmd start` from `Code/` after setting `NODE_ENV
 
 ## Project Documents
 
+- [Final project report (PDF)](Documents/Final_Project_Report.pdf) compares the academic source documents with the current codebase and live demo. It identifies delivered, partial, and undelivered requirements, as well as implementation features not specified in those documents.
 - [Detailed application guide](Code/README.md) covers the current schema, all API routes, setup, and implementation caveats.
 - [Project problem statement](Documents/PROJECT%20PROBLEM%20STATEMEN1.docx) describes the SME inventory problem and business case.
 - [Inventory system development plan](Documents/Inventory%20System%20Development%20Plan.docx) documents planned workflows, requirements, and design iterations.
@@ -710,7 +711,7 @@ Start the compiled API with `npm.cmd start` from `Code/` after setting `NODE_ENV
 - [Implementation roadmap](Implementation%20Roadmap.md) stages the MVP and future expansion work.
 - [Demo notes](Demo/Demo.md) link to the project demonstration.
 
-The Word documents include proposed target-state capabilities. Compare them with the implementation/status table above; design requirements are not automatically delivered features.
+The Word documents include proposed target-state capabilities. The PDF report distinguishes document requirements from capabilities verified in the source and live demo; design requirements are not automatically delivered features.
 
 ## License
 
