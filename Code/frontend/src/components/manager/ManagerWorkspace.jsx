@@ -1,12 +1,31 @@
 import React, { useEffect, useState } from 'react';
-import { Icon } from '../common/Icons';
 
 export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'overview' }) => {
-  const [activeSubTab, setActiveSubTab] = useState('overview'); // 'overview' | 'forecasting' | 'suppliers' | 'catalog'
-  useEffect(() => setActiveSubTab(['overview', 'forecasting', 'suppliers', 'catalog'].includes(initialTab) ? initialTab : 'overview'), [initialTab]);
+  const [activeSubTab, setActiveSubTab] = useState('overview');
+  useEffect(() => {
+    setActiveSubTab(['overview', 'forecasting', 'suppliers', 'supplier-ratings', 'catalog'].includes(initialTab) ? initialTab : 'overview');
+  }, [initialTab]);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [catalogSearch, setCatalogSearch] = useState('');
   const [generatingPo, setGeneratingPo] = useState(false);
+  const [receivingPoId, setReceivingPoId] = useState(null);
+  const [submittingReceipt, setSubmittingReceipt] = useState(false);
+  const [receiptForm, setReceiptForm] = useState({
+    quantity: '',
+    warehouseId: '',
+    binCode: '',
+    condition: 'GOOD',
+    notes: '',
+  });
+  const [reviewingPoId, setReviewingPoId] = useState(null);
+  const [viewingReviewPoId, setViewingReviewPoId] = useState(null);
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [supplierReviewForm, setSupplierReviewForm] = useState({
+    deliveryScore: '',
+    qualityScore: '',
+    communicationScore: '',
+    feedback: '',
+  });
   const [productFormOpen, setProductFormOpen] = useState(false);
   const [editingProductId, setEditingProductId] = useState(null);
   const [productForm, setProductForm] = useState({
@@ -31,6 +50,47 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const forecasts = workspace.forecasts || [];
   const suppliers = workspace.suppliers || [];
   const purchaseOrders = workspace.purchaseOrders || [];
+  const warehouses = workspace.warehouses || [];
+  const canReceivePurchaseOrders = currentUser?.role === 'MANAGER';
+  const canSubmitSupplierReviews = currentUser?.role === 'PROCUREMENT_STAFF';
+  const workspaceTitle = activeSubTab === 'supplier-ratings'
+    ? 'Supplier Ratings'
+    : activeSubTab === 'suppliers'
+      ? 'Purchase Order Management'
+      : 'Store Operations & Demand Analytics';
+
+  const handleSubmitSupplierReview = async (event) => {
+    event.preventDefault();
+    if (!reviewingPoId) return;
+
+    setSubmittingReview(true);
+    try {
+      const res = await fetch(`${apiBase}/api/purchase-orders/${reviewingPoId}/supplier-review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ['Bearer', token].join(' ')
+        },
+        body: JSON.stringify({
+          deliveryScore: Number(supplierReviewForm.deliveryScore),
+          qualityScore: Number(supplierReviewForm.qualityScore),
+          communicationScore: Number(supplierReviewForm.communicationScore),
+          feedback: supplierReviewForm.feedback,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to submit supplier review');
+
+      onNotify?.(`Supplier review for PO-${reviewingPoId} submitted`, 'success');
+      setReviewingPoId(null);
+      setSupplierReviewForm({ deliveryScore: '', qualityScore: '', communicationScore: '', feedback: '' });
+      onRefresh();
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
 
   const handleApprovePo = async (poId) => {
     try {
@@ -66,6 +126,52 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
     }
   };
 
+  const openReceiptForm = (purchaseOrder) => {
+    const product = products.find((entry) => entry.sku === purchaseOrder.sku);
+    const productWarehouseExists = warehouses.some((warehouse) => warehouse.id === product?.warehouseId);
+    setReceiptForm({
+      quantity: String(purchaseOrder.remainingQuantity),
+      warehouseId: productWarehouseExists ? product.warehouseId : warehouses[0]?.id || product?.warehouseId || '',
+      binCode: product?.binLocation || '',
+      condition: 'GOOD',
+      notes: '',
+    });
+    setReceivingPoId(purchaseOrder.id);
+  };
+
+  const handleReceivePurchaseOrder = async (event) => {
+    event.preventDefault();
+    if (!receivingPoId) return;
+
+    setSubmittingReceipt(true);
+    try {
+      const res = await fetch(`${apiBase}/api/purchase-orders/${receivingPoId}/receive`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ['Bearer', token].join(' '),
+        },
+        body: JSON.stringify({
+          quantity: Number(receiptForm.quantity),
+          warehouseId: receiptForm.warehouseId || undefined,
+          binCode: receiptForm.binCode || undefined,
+          condition: receiptForm.condition,
+          notes: receiptForm.notes,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to record goods receipt');
+
+      onNotify?.(`Received ${data.purchaseOrder.receivedQuantity} of ${data.purchaseOrder.quantity} units for PO-${receivingPoId}`, 'success');
+      setReceivingPoId(null);
+      onRefresh();
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setSubmittingReceipt(false);
+    }
+  };
+
   const handleCreatePoFromForecast = async (item) => {
     try {
       const supplier = suppliers[0] || { id: 1 };
@@ -73,7 +179,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: ['Bearer', token].join(' '),
         },
         body: JSON.stringify({
           supplierId: supplier.id,
@@ -159,38 +265,47 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span className="badge badge-primary">
-              <Icon name="trending-up" size={14} /> Store Manager Command Center
+              {activeSubTab === 'supplier-ratings' ? 'Supplier Performance' : activeSubTab === 'suppliers' ? 'Procurement Workspace' : 'Store Manager Command Center'}
             </span>
-            <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Real-time business intelligence</span>
+            <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+              {activeSubTab === 'supplier-ratings' ? 'Review history and ratings' : activeSubTab === 'suppliers' ? 'Order lifecycle and receiving' : 'Real-time business intelligence'}
+            </span>
           </div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 800, marginTop: '4px', letterSpacing: '-0.02em' }}>
-            Store Operations & Demand Analytics
+            {workspaceTitle}
           </h1>
         </div>
 
         <div style={{ display: 'flex', gap: '8px' }}>
           <button className="btn btn-secondary" onClick={onRefresh}>
-            <Icon name="refresh-cw" size={16} /> Refresh
+            Refresh
           </button>
-          <button className="btn btn-primary" onClick={handleGenerateLowStockPos} disabled={generatingPo}>
-            <Icon name="zap" size={16} /> {generatingPo ? 'Evaluating Stock...' : 'Auto-Generate Low Stock POs'}
-          </button>
+          {activeSubTab !== 'supplier-ratings' && (
+            <button className="btn btn-primary" onClick={handleGenerateLowStockPos} disabled={generatingPo}>
+              {generatingPo ? 'Evaluating Stock...' : 'Auto-Generate Low Stock POs'}
+            </button>
+          )}
         </div>
       </div>
 
       {/* Sub-Navigation Tabs */}
       <div className="workspace-subnav" style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', marginBottom: '1.5rem', paddingBottom: '0.5rem' }}>
         <button className={`btn ${activeSubTab === 'overview' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('overview')}>
-          <Icon name="trending-up" size={16} /> Executive KPI Dashboard
+          Executive KPI Dashboard
         </button>
         <button className={`btn ${activeSubTab === 'forecasting' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('forecasting')}>
-          <Icon name="clipboard-list" size={16} /> AI Demand Forecasting & EOQ Report
+          AI Demand Forecasting & EOQ Report
         </button>
         <button className={`btn ${activeSubTab === 'suppliers' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('suppliers')}>
-          <Icon name="truck" size={16} /> Suppliers & Purchase Orders ({purchaseOrders.length})
+          Purchase Orders ({purchaseOrders.length})
         </button>
+        {canSubmitSupplierReviews && (
+          <button className={`btn ${activeSubTab === 'supplier-ratings' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('supplier-ratings')}>
+            Supplier Ratings
+          </button>
+        )}
         <button className={`btn ${activeSubTab === 'catalog' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('catalog')}>
-          <Icon name="box" size={16} /> Master Product Inventory ({products.length})
+          Master Product Inventory ({products.length})
         </button>
       </div>
 
@@ -202,9 +317,6 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             <div className="kpi-card">
               <div className="kpi-header">
                 <span className="kpi-title">Total Daily Revenue (ZAR)</span>
-                <div className="kpi-icon" style={{ background: 'var(--primary-light)', color: 'var(--primary)' }}>
-                  <Icon name="dollar-sign" size={18} />
-                </div>
               </div>
               <div className="kpi-value">R {summary.dailySales?.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</div>
               <div className="kpi-subtext" style={{ color: 'var(--success-text)' }}>
@@ -215,9 +327,6 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             <div className="kpi-card">
               <div className="kpi-header">
                 <span className="kpi-title">Stock on Hand / Lines</span>
-                <div className="kpi-icon" style={{ background: 'var(--success-light)', color: 'var(--success)' }}>
-                  <Icon name="box" size={18} />
-                </div>
               </div>
               <div className="kpi-value">{summary.stockOnHand} units</div>
               <div className="kpi-subtext">Across {products.length} product lines in 2 warehouses</div>
@@ -226,9 +335,6 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             <div className="kpi-card">
               <div className="kpi-header">
                 <span className="kpi-title">Low Stock Critical Alerts</span>
-                <div className="kpi-icon" style={{ background: 'var(--danger-light)', color: 'var(--danger)' }}>
-                  <Icon name="alert-triangle" size={18} />
-                </div>
               </div>
               <div className="kpi-value" style={{ color: summary.lowStockCount > 0 ? 'var(--danger)' : 'var(--text-primary)' }}>
                 {summary.lowStockCount} items
@@ -241,9 +347,6 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             <div className="kpi-card">
               <div className="kpi-header">
                 <span className="kpi-title">Inventory Valuation (Retail)</span>
-                <div className="kpi-icon" style={{ background: 'var(--purple-light)', color: 'var(--purple)' }}>
-                  <Icon name="trending-up" size={18} />
-                </div>
               </div>
               <div className="kpi-value">R {summary.inventoryRetailValue?.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</div>
               <div className="kpi-subtext">
@@ -256,10 +359,8 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           <div className="grid-cols-2" style={{ marginBottom: '1.5rem' }}>
             {/* Sales Trend Chart (Figure from documentation) */}
             <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <Icon name="trending-up" size={18} /> Sales Overview (ZAR) & Machine Learning Projection
-                </h3>
+              <div className="card-header analytics-card-header">
+                <h3 className="card-title">Sales Overview (ZAR) & Machine Learning Projection</h3>
                 <span className="badge badge-primary">Daily Time Series</span>
               </div>
               <div style={{ padding: '1rem 0' }}>
@@ -294,10 +395,8 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
 
             {/* Products by Category Donut Visualization */}
             <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <Icon name="box" size={18} /> Products by Category Breakdown
-                </h3>
+              <div className="card-header analytics-card-header">
+                <h3 className="card-title">Products by Category Breakdown</h3>
                 <span className="badge badge-gray">Inventory Portfolio</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '0.5rem 0' }}>
@@ -324,9 +423,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           {/* Top Selling Products Leaderboard */}
           <div className="card">
             <div className="card-header">
-              <h3 className="card-title">
-                <Icon name="zap" size={18} /> Fast-Moving SKU Velocity & Merchandising Performance
-              </h3>
+              <h3 className="card-title">Fast-Moving SKU Velocity & Merchandising Performance</h3>
               <span className="badge badge-success">Top Performers</span>
             </div>
             <div className="table-container" style={{ border: 'none' }}>
@@ -384,7 +481,6 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           {/* Formula Callout Banner */}
           <div className="card" style={{ marginBottom: '1.5rem', background: 'var(--primary-light)', borderColor: 'var(--primary-border)' }}>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-              <div style={{ color: 'var(--primary)' }}><Icon name="clipboard-list" size={24} /></div>
               <div>
                 <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--primary)', marginBottom: '4px' }}>
                   Scientific Replenishment Models (Phase 2 & 3 Specification)
@@ -454,7 +550,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                           className="btn btn-primary btn-sm"
                           onClick={() => handleCreatePoFromForecast(f)}
                         >
-                          <Icon name="plus" size={14} /> Approve & Create PO
+                          Approve & Create PO
                         </button>
                       </td>
                     </tr>
@@ -466,40 +562,16 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
         </div>
       )}
 
-      {/* TAB 3: SUPPLIERS & PURCHASE ORDERS */}
+      {/* TAB 3: PURCHASE ORDERS */}
       {activeSubTab === 'suppliers' && (
         <div>
-          {/* Supplier Performance Scorecards */}
-          <div className="grid-cols-3" style={{ marginBottom: '1.5rem' }}>
-            {suppliers.map((s) => (
-              <div key={s.id} className="card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span className="badge badge-primary">Supplier #{s.id}</span>
-                  <span className="badge badge-success">⭐ {s.rating} / 5.0</span>
-                </div>
-                <h3 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '2px' }}>{s.name}</h3>
-                <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>{s.contact}</p>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8125rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>Average Lead Time:</span>
-                    <strong>{s.leadTimeDays} business days</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>On-Time Delivery Rate:</span>
-                    <strong style={{ color: s.onTimeDeliveryRate >= 90 ? 'var(--success)' : 'var(--warning)' }}>
-                      {s.onTimeDeliveryRate}%
-                    </strong>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
           {/* Purchase Orders Management Table */}
           <div className="card" style={{ padding: 0 }}>
             <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border-color)' }}>
-              <h3 className="card-title">Procurement & Active Purchase Orders</h3>
+              <h3 className="card-title">Purchase Orders</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', marginTop: '6px' }}>
+                Create and track purchase orders, approvals, dispatch, and receiving status.
+              </p>
             </div>
             <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
               <table className="custom-table">
@@ -556,6 +628,17 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                               Send EDI
                             </button>
                           )}
+                          {canReceivePurchaseOrders && ['APPROVED', 'SENT', 'PARTIALLY_RECEIVED'].includes(po.status) && po.remainingQuantity > 0 && (
+                            <button className="btn btn-primary btn-sm" onClick={() => openReceiptForm(po)}>
+                              Receive goods
+                            </button>
+                          )}
+                          {!canReceivePurchaseOrders && ['APPROVED', 'SENT', 'PARTIALLY_RECEIVED'].includes(po.status) && po.remainingQuantity > 0 && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Warehouse receives this order</span>
+                          )}
+                          {!['DRAFT', 'APPROVED', 'SENT', 'PARTIALLY_RECEIVED'].includes(po.status) && (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -567,7 +650,180 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
         </div>
       )}
 
-      {/* TAB 4: MASTER PRODUCT CATALOGUE */}
+      {/* TAB 4: SUPPLIER RATINGS */}
+      {activeSubTab === 'supplier-ratings' && canSubmitSupplierReviews && (
+        <div>
+          <div style={{ marginBottom: '1.25rem' }}>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Supplier Ratings</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginTop: '4px' }}>
+              Review suppliers after a purchase order is fully received. Each completed PO can be rated once.
+            </p>
+          </div>
+
+          <div className="grid-cols-3" style={{ marginBottom: '1.5rem' }}>
+            {suppliers.map((supplier) => (
+              <div key={supplier.id} className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span className="badge badge-primary">Supplier #{supplier.id}</span>
+                  <span className={supplier.reviewCount ? 'badge badge-success' : 'badge badge-gray'}>
+                    {supplier.reviewCount ? `★ ${supplier.rating} / 5.0` : 'Not rated yet'}
+                  </span>
+                </div>
+                <h3 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '2px' }}>{supplier.name}</h3>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>{supplier.contact}</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8125rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Submitted reviews:</span>
+                    <strong>{supplier.reviewCount || 0}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Average lead time:</span>
+                    <strong>{supplier.leadTimeDays} business days</strong>
+                  </div>
+                  {[
+                    ['Delivery', supplier.averageDeliveryScore],
+                    ['Product quality', supplier.averageQualityScore],
+                    ['Communication', supplier.averageCommunicationScore],
+                  ].map(([label, score]) => (
+                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>{label}:</span>
+                      <strong>{supplier.reviewCount ? `${Number(score).toFixed(2)} / 5` : '—'}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="card" style={{ padding: 0 }}>
+            <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border-color)' }}>
+              <h3 className="card-title">Completed Orders to Review</h3>
+            </div>
+            <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
+              <table className="custom-table">
+                <thead>
+                  <tr><th>PO Number</th><th>Supplier</th><th>Item</th><th>Received</th><th>Status</th><th>Rating</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                  {purchaseOrders.filter((po) => po.status === 'RECEIVED').map((po) => (
+                    <tr key={po.id}>
+                      <td><span className="badge badge-gray form-input-mono">PO-{po.id}</span></td>
+                      <td>{po.supplierName}</td>
+                      <td>{po.itemName}</td>
+                      <td>{po.receivedQuantity} / {po.quantity}</td>
+                      <td><span className="badge badge-success">RECEIVED</span></td>
+                      <td>{po.supplierReview ? 'Reviewed' : 'Not reviewed'}</td>
+                      <td>
+                        {po.canReviewSupplier ? (
+                          <button className="btn btn-primary btn-sm" onClick={() => {
+                            setViewingReviewPoId(null);
+                            setReviewingPoId(po.id);
+                          }}>
+                            Rate Supplier
+                          </button>
+                        ) : po.supplierReview ? (
+                          <button className="btn btn-secondary btn-sm" onClick={() => {
+                            setReviewingPoId(null);
+                            setViewingReviewPoId(viewingReviewPoId === po.id ? null : po.id);
+                          }}>
+                            {viewingReviewPoId === po.id ? 'Hide Review' : 'View Review'}
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!purchaseOrders.some((po) => po.status === 'RECEIVED') && (
+                <div className="empty-state">
+                  <strong>No completed purchase orders yet</strong>
+                  <span>Once Warehouse staff fully receive an order, it will appear here for rating.</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {reviewingPoId && (
+            <form className="card" onSubmit={handleSubmitSupplierReview} style={{ marginTop: '1rem' }}>
+              <div className="card-header">
+                <div>
+                  <h3 className="card-title">Review Supplier · PO-{reviewingPoId}</h3>
+                  <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Score the completed delivery from 1 (poor) to 5 (excellent).</p>
+                </div>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReviewingPoId(null)}>Cancel</button>
+              </div>
+              <div className="grid-cols-3" style={{ gap: '1rem' }}>
+                {[
+                  ['deliveryScore', 'Delivery'],
+                  ['qualityScore', 'Product quality'],
+                  ['communicationScore', 'Communication'],
+                ].map(([field, label]) => (
+                  <label key={field} className="form-group">
+                    <span className="form-label">{label}</span>
+                    <select
+                      className="form-input"
+                      value={supplierReviewForm[field]}
+                      onChange={(event) => setSupplierReviewForm((form) => ({ ...form, [field]: event.target.value }))}
+                      required
+                    >
+                      <option value="">Choose a score</option>
+                      {[1, 2, 3, 4, 5].map((score) => (
+                        <option key={score} value={score}>{score} · {['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'][score]}</option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <label className="form-group" style={{ marginTop: '1rem' }}>
+                <span className="form-label">Feedback (optional)</span>
+                <textarea
+                  className="form-input"
+                  rows={3}
+                  maxLength={2000}
+                  value={supplierReviewForm.feedback}
+                  onChange={(event) => setSupplierReviewForm((form) => ({ ...form, feedback: event.target.value }))}
+                  placeholder="Add context for the scores"
+                />
+              </label>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={submittingReview || !supplierReviewForm.deliveryScore || !supplierReviewForm.qualityScore || !supplierReviewForm.communicationScore}
+                >
+                  {submittingReview ? 'Submitting…' : 'Submit Review'}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {viewingReviewPoId && (() => {
+            const review = purchaseOrders.find((po) => po.id === viewingReviewPoId)?.supplierReview;
+            if (!review) return null;
+            return (
+              <div className="card" style={{ marginTop: '1rem' }}>
+                <div className="card-header">
+                  <h3 className="card-title">Supplier Review · PO-{viewingReviewPoId}</h3>
+                  <span className="badge badge-success">
+                    Overall {((review.deliveryScore + review.qualityScore + review.communicationScore) / 3).toFixed(2)} / 5
+                  </span>
+                </div>
+                <div className="grid-cols-3" style={{ gap: '1rem' }}>
+                  <div><span className="form-label">Delivery</span><strong>{review.deliveryScore} / 5</strong></div>
+                  <div><span className="form-label">Product quality</span><strong>{review.qualityScore} / 5</strong></div>
+                  <div><span className="form-label">Communication</span><strong>{review.communicationScore} / 5</strong></div>
+                </div>
+                <p style={{ color: 'var(--text-muted)', marginTop: '1rem' }}>
+                  Reviewed by {review.reviewerName} · {new Date(review.createdAt).toLocaleString()}
+                </p>
+                {review.feedback && <p style={{ marginTop: '0.5rem' }}>{review.feedback}</p>}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* TAB 5: MASTER PRODUCT CATALOGUE */}
       {activeSubTab === 'catalog' && (
         <div>
           <div className="card" style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1.25rem', padding: '0.75rem 1rem' }}>
@@ -589,7 +845,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
               </select>
             </div>
             <button className="btn btn-primary" onClick={() => openProductForm()}>
-              <Icon name="plus" size={16} /> Add Product
+              Add Product
             </button>
           </div>
 
@@ -619,7 +875,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                 )}
               </div>
               {!editingProductId && <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', margin: '0.75rem 0' }}>A unique barcode will be generated automatically when this product is saved.</p>}
-              <button className="btn btn-primary" type="submit"><Icon name="check" size={16} /> Save Product</button>
+              <button className="btn btn-primary" type="submit">Save Product</button>
             </form>
           )}
 
@@ -665,7 +921,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                         {p.availableStock} available
                       </span>
                     </td>
-                    <td><button className="btn btn-secondary btn-sm" onClick={() => openProductForm(p)}><Icon name="edit" size={14} /> Edit</button></td>
+                    <td><button className="btn btn-secondary btn-sm" onClick={() => openProductForm(p)}>Edit</button></td>
                     <td>
                       <span className={`badge ${p.status === 'Healthy' ? 'badge-success' : p.status === 'Watch' ? 'badge-warning' : 'badge-danger'}`}>
                         {p.status}
@@ -676,6 +932,123 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {receivingPoId && (
+        <div className="modal-overlay" onClick={() => !submittingReceipt && setReceivingPoId(null)}>
+          <form
+            className="modal-content"
+            onSubmit={handleReceivePurchaseOrder}
+            onClick={(event) => event.stopPropagation()}
+            aria-labelledby="purchase-order-receipt-title"
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setReceivingPoId(null)}
+              disabled={submittingReceipt}
+              aria-label="Close goods receipt form"
+            >
+              ×
+            </button>
+            <h2 id="purchase-order-receipt-title" style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.35rem' }}>
+              Receive goods · PO-{receivingPoId}
+            </h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.25rem' }}>
+              Record the quantity physically received. Stock and the purchase order will update together.
+            </p>
+            {(() => {
+              const purchaseOrder = purchaseOrders.find((entry) => entry.id === receivingPoId);
+              return purchaseOrder ? (
+                <p style={{ marginBottom: '1rem', fontSize: '0.875rem' }}>
+                  {purchaseOrder.itemName} · {purchaseOrder.remainingQuantity} units still due
+                </p>
+              ) : null;
+            })()}
+            <div className="form-group">
+              <label className="form-label" htmlFor="receipt-quantity">Quantity received</label>
+              <input
+                id="receipt-quantity"
+                className="form-input"
+                type="number"
+                min="1"
+                max={purchaseOrders.find((entry) => entry.id === receivingPoId)?.remainingQuantity}
+                step="1"
+                value={receiptForm.quantity}
+                onChange={(event) => setReceiptForm((form) => ({ ...form, quantity: event.target.value }))}
+                required
+              />
+            </div>
+            <div className="grid-cols-2">
+              <div className="form-group">
+                <label className="form-label" htmlFor="receipt-warehouse">Receiving warehouse</label>
+                {warehouses.length > 0 ? (
+                  <select
+                    id="receipt-warehouse"
+                    className="form-select"
+                    value={receiptForm.warehouseId}
+                    onChange={(event) => setReceiptForm((form) => ({ ...form, warehouseId: event.target.value }))}
+                    required
+                  >
+                    {warehouses.map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>{warehouse.id} — {warehouse.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    id="receipt-warehouse"
+                    className="form-input"
+                    value={receiptForm.warehouseId}
+                    onChange={(event) => setReceiptForm((form) => ({ ...form, warehouseId: event.target.value }))}
+                    required
+                  />
+                )}
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="receipt-bin">Receiving bin</label>
+                <input
+                  id="receipt-bin"
+                  className="form-input"
+                  value={receiptForm.binCode}
+                  onChange={(event) => setReceiptForm((form) => ({ ...form, binCode: event.target.value }))}
+                  required
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="receipt-condition">Shipment condition</label>
+              <select
+                id="receipt-condition"
+                className="form-select"
+                value={receiptForm.condition}
+                onChange={(event) => setReceiptForm((form) => ({ ...form, condition: event.target.value }))}
+              >
+                <option value="GOOD">Good / intact</option>
+                <option value="DAMAGED">Damaged in transit</option>
+                <option value="SHORTAGE">Short-shipped / missing units</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="receipt-notes">Receiving notes (optional)</label>
+              <textarea
+                id="receipt-notes"
+                className="form-input"
+                rows={3}
+                maxLength={1000}
+                value={receiptForm.notes}
+                onChange={(event) => setReceiptForm((form) => ({ ...form, notes: event.target.value }))}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setReceivingPoId(null)} disabled={submittingReceipt}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={submittingReceipt}>
+                {submittingReceipt ? 'Recording receipt…' : 'Confirm receipt & update stock'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

@@ -293,6 +293,19 @@ erDiagram
         int quantity
         int receivedQuantity
     }
+    SUPPLIER_REVIEW {
+        int id PK
+        string companyId
+        int purchaseOrderId
+        int supplierId
+        string reviewerId
+        string reviewerName
+        int deliveryScore
+        int qualityScore
+        int communicationScore
+        string feedback
+        datetime createdAt
+    }
     STOCK_MOVEMENT {
         int id PK
         int productId
@@ -396,6 +409,9 @@ erDiagram
     PRODUCT ||--o{ SALE_ITEM : "sold as"
     SUPPLIER ||--o{ PURCHASE_ORDER : "supplies"
     PURCHASE_ORDER ||--|{ PURCHASE_ORDER_ITEM : "contains"
+    PURCHASE_ORDER ||--o| SUPPLIER_REVIEW : "reviewed once after receipt"
+    SUPPLIER ||--o{ SUPPLIER_REVIEW : "rated through"
+    USER ||--o{ SUPPLIER_REVIEW : "submitted by"
     SALE ||--|{ SALE_ITEM : "contains"
     RETURN ||--|{ RETURN_ITEM : "contains"
     CUSTOMER_ORDER ||--|{ CUSTOMER_ORDER_ITEM : "contains"
@@ -403,6 +419,8 @@ erDiagram
 ```
 
 `products.stock` and `products.qtyReserved` are aggregate compatibility fields; per-location quantities live in `inventory_items`. The Sequelize models do not declare every logical relation above as a database foreign key. `cycle_counts.items` is stored as JSONB, and audit logs are insert-only through the application (not protected from direct database edits by a trigger).
+
+Supplier ratings returned by the API are averages of persisted reviews, not editable seed values. Procurement staff can submit one review per fully received purchase order, scoring delivery, product quality, and communication from 1–5. A unique `(companyId, purchaseOrderId)` index enforces the one-review limit per tenant.
 
 ---
 
@@ -461,7 +479,7 @@ erDiagram
 | **Catalogue search & filter** | Full-text search by product name, SKU, or barcode; combined with category tab filter |
 | **One-click replenishment PO** | From the forecasting view, a high-risk SKU can prefill a draft PO using the supplier, current stock, and configured reorder quantity; this is not an EOQ model |
 | **Bulk low-stock PO generation** | Single button generates draft purchase orders for all SKUs currently below reorder point — skips any SKU that already has an open draft PO |
-| **Supplier performance ratings** | Supplier list shows on-time delivery rate and quality score alongside contact details |
+| **Supplier performance ratings** | Procurement staff can review each fully received PO once, scoring delivery, quality, and communication from 1–5; supplier averages are calculated from submitted reviews |
 | **Purchase order approval flow** | Manager and Procurement API roles can approve (DRAFT → APPROVED), send (APPROVED → SENT), or cancel open orders |
 | **Forecasting sub-tabs** | Workspace has four tabs: Overview (KPIs), Forecasting (risk table), Suppliers, and Catalogue |
 
@@ -609,6 +627,12 @@ Copy-Item backend\.env.example backend\.env
 
 For the included local Compose database, set `DB_HOST=localhost`, `DB_PORT=5432`, `DB_USER=postgres`, `DB_PASSWORD=postgres`, and `DB_NAME=inventory_db`. Replace the placeholder `JWT_SECRET` with a long random value. The Compose password is for local development only. The Redis container is currently unused by the application.
 
+The backend loads `Code/.env` first and then `backend/.env`; environment variables already set in the process take precedence. When upgrading an existing database, apply the tenant-scoped email migration before starting the app:
+
+```powershell
+psql -h localhost -U postgres -d inventory_db -f backend\migrations\003_tenant_scoped_user_email.sql
+```
+
 ### 4. Start Development Servers
 
 ```powershell
@@ -719,6 +743,7 @@ All routes are served by the Express API on port `4000`. Authorization is enforc
 | `PATCH` | `/api/purchase-orders/:id/send` | Manager, Procurement | Mark an order sent |
 | `PATCH` | `/api/purchase-orders/:id/cancel` | Manager, Procurement | Cancel an open order |
 | `PATCH` | `/api/purchase-orders/:id/receive` | Manager, Warehouse | Receive into a selected bin |
+| `POST` | `/api/purchase-orders/:id/supplier-review` | Procurement | Submit one review for a fully received PO (three 1–5 scores and optional feedback) |
 | `GET` | `/api/forecast` | Admin, Manager, Procurement | List demand forecasts |
 | `GET` | `/api/forecast/:sku` | Admin, Manager, Procurement | Forecast a SKU |
 | `GET` | `/api/orders` | Manager, Cashier, Warehouse | List online orders |
@@ -756,7 +781,7 @@ npm.cmd run test --workspace backend
 
 ## Environment Variables
 
-Configure `backend/.env` (copy from `backend/.env.example`):
+Configure `Code/.env` or `backend/.env` (copy from `backend/.env.example`):
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
@@ -781,7 +806,7 @@ Configure `backend/.env` (copy from `backend/.env.example`):
 
 > [!CAUTION]
 > Never commit `backend/.env` to version control. It is listed in `.gitignore`. Use `backend/.env.example` as the template — it contains only placeholder values.
-> The backend will not start without `DB_PASSWORD` and `JWT_SECRET`; provide unique values through `backend/.env` or the deployment environment. A new production database also requires `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Set `CORS_ORIGINS` to the exact frontend origin(s) in production.
+> The backend will not start without `DB_PASSWORD` and `JWT_SECRET`; provide unique values through `Code/.env`, `backend/.env`, or the deployment environment. Process environment variables take precedence, followed by `Code/.env` and then `backend/.env`. A new production database also requires `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Set `CORS_ORIGINS` to the exact frontend origin(s) in production.
 
 ---
 

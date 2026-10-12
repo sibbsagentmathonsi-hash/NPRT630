@@ -402,6 +402,41 @@ PurchaseOrderItemModel.init(
   { sequelize, tableName: 'purchase_order_items', timestamps: true }
 );
 
+class SupplierReviewModel extends Model {
+  declare id: number;
+  declare companyId: string;
+  declare purchaseOrderId: number;
+  declare supplierId: number;
+  declare reviewerId: string;
+  declare reviewerName: string;
+  declare deliveryScore: number;
+  declare qualityScore: number;
+  declare communicationScore: number;
+  declare feedback?: string;
+  declare createdAt: Date;
+}
+
+SupplierReviewModel.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    companyId: { type: DataTypes.STRING(80), allowNull: false, defaultValue: 'company-default' },
+    purchaseOrderId: { type: DataTypes.INTEGER, allowNull: false },
+    supplierId: { type: DataTypes.INTEGER, allowNull: false },
+    reviewerId: { type: DataTypes.STRING(80), allowNull: false },
+    reviewerName: { type: DataTypes.STRING(150), allowNull: false },
+    deliveryScore: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 5 } },
+    qualityScore: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 5 } },
+    communicationScore: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 5 } },
+    feedback: { type: DataTypes.TEXT, allowNull: true },
+  },
+  {
+    sequelize,
+    tableName: 'supplier_reviews',
+    timestamps: true,
+    indexes: [{ unique: true, fields: ['companyId', 'purchaseOrderId'] }],
+  }
+);
+
 class InventoryReservationModel extends Model {
   declare id: number;
   declare companyId?: string;
@@ -500,6 +535,7 @@ export {
   ReturnItemModel,
   PurchaseOrderModel,
   PurchaseOrderItemModel,
+  SupplierReviewModel,
   InventoryReservationModel,
   CustomerOrderModel,
   CustomerOrderItemModel,

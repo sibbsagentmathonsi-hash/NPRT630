@@ -1,7 +1,7 @@
-import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import { hydrateUsers, users, validatePasswordStrength } from '../modules/auth/auth';
 import { inventoryItems } from '../inventory';
+import { loadEnvironment } from './environment';
 import { sequelize } from './sequelize';
 import { DEFAULT_COMPANY_ID, companies, defaultCompany } from './tenancy';
 import { hydratePolicies } from './policies';
@@ -9,7 +9,7 @@ import { hydratePolicies } from './policies';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Client } = require('pg');
 
-dotenv.config();
+loadEnvironment();
 
 const dbHost = process.env.DB_HOST || 'localhost';
 const dbPort = Number(process.env.DB_PORT || 5432);
@@ -63,6 +63,7 @@ export const connectDatabase = async (): Promise<boolean> => {
       InventoryReservationModel,
       PurchaseOrderItemModel,
       PurchaseOrderModel,
+      SupplierReviewModel,
       ReturnItemModel,
       ReturnModel,
       RoleModel,
@@ -116,6 +117,7 @@ export const connectDatabase = async (): Promise<boolean> => {
     await ReturnItemModel.sync({ alter: true });
     await PurchaseOrderModel.sync({ alter: true });
     await PurchaseOrderItemModel.sync({ alter: true });
+    await SupplierReviewModel.sync({ alter: true });
     await CustomerOrderModel.sync({ alter: true });
     await CustomerOrderItemModel.sync({ alter: true });
     await InventoryReservationModel.sync({ alter: true });
@@ -152,23 +154,32 @@ export const connectDatabase = async (): Promise<boolean> => {
       }
     } else {
       for (const user of users) {
-        await UserModel.findOrCreate({
-          where: { employeeId: user.employeeId },
-          defaults: {
-            companyId: user.companyId || DEFAULT_COMPANY_ID,
-            isPlatformAdmin: user.isPlatformAdmin,
-            employeeId: user.employeeId,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            sector: user.sector,
-            status: user.status,
-            isFirstLogin: user.isFirstLogin,
-            mfaEnabled: user.mfaEnabled,
-            emailVerified: user.emailVerified,
-            passwordHash: await bcrypt.hash(user.password ?? '', 12),
-            lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
-          },
+        const companyId = user.companyId || DEFAULT_COMPANY_ID;
+        const email = user.email.trim().toLowerCase();
+        const [employeeMatch, emailMatch] = await Promise.all([
+          UserModel.findOne({ where: { companyId, employeeId: user.employeeId } }),
+          UserModel.findOne({ where: { companyId, email } }),
+        ]);
+
+        if (employeeMatch && emailMatch && employeeMatch.id !== emailMatch.id) {
+          throw new Error(`Conflicting existing users for development seed employee "${user.employeeId}" in company "${companyId}".`);
+        }
+        if (employeeMatch || emailMatch) continue;
+
+        await UserModel.create({
+          companyId,
+          isPlatformAdmin: user.isPlatformAdmin,
+          employeeId: user.employeeId,
+          name: user.name,
+          email,
+          role: user.role,
+          sector: user.sector,
+          status: user.status,
+          isFirstLogin: user.isFirstLogin,
+          mfaEnabled: user.mfaEnabled,
+          emailVerified: user.emailVerified,
+          passwordHash: await bcrypt.hash(user.password ?? '', 12),
+          lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
         });
       }
     }
@@ -186,7 +197,7 @@ export const connectDatabase = async (): Promise<boolean> => {
       hydrateSalesReceipts,
       hydrateStockMovements,
     } = await import('../inventory');
-    const { hydratePurchaseOrders } = await import('../modules/procurement/procurement');
+    const { hydratePurchaseOrders, hydrateSupplierReviews } = await import('../modules/procurement/procurement');
     const storedProducts = await ProductModel.findAll();
     hydrateProducts(storedProducts.map((product) => product.toJSON() as any));
     const storedInventoryItems = await InventoryItemModel.findAll();
@@ -196,11 +207,12 @@ export const connectDatabase = async (): Promise<boolean> => {
       hydrateInventoryItems(storedInventoryItems.map((item) => item.toJSON() as any));
     }
 
-    const [storedUsers, storedSales, storedMovements, storedPurchaseOrders, storedCustomerOrders, storedCycleCounts] = await Promise.all([
+    const [storedUsers, storedSales, storedMovements, storedPurchaseOrders, storedSupplierReviews, storedCustomerOrders, storedCycleCounts] = await Promise.all([
       UserModel.findAll(),
       SaleModel.findAll({ include: [{ model: SaleItemModel, as: 'items' }] }),
       StockMovementModel.findAll({ order: [['id', 'ASC']] }),
       PurchaseOrderModel.findAll({ include: [{ model: PurchaseOrderItemModel, as: 'items' }] }),
+      SupplierReviewModel.findAll({ order: [['createdAt', 'DESC']] }),
       CustomerOrderModel.findAll({ include: [{ model: CustomerOrderItemModel, as: 'items' }] }),
       CycleCountModel.findAll({ order: [['id', 'ASC']] }),
     ]);
@@ -215,6 +227,7 @@ export const connectDatabase = async (): Promise<boolean> => {
       const item = order.items?.[0];
       return {
         id: Number(order.id),
+        companyId: String(order.companyId ?? DEFAULT_COMPANY_ID),
         supplierId: Number(order.supplierId),
         sku: String(item?.sku ?? ''),
         itemName: String(item?.itemName ?? ''),
@@ -226,6 +239,20 @@ export const connectDatabase = async (): Promise<boolean> => {
         sentAt: order.sentAt ? storedDate(order.sentAt) : undefined,
         expectedDeliveryDate: order.expectedDeliveryDate ? storedDate(order.expectedDeliveryDate) : undefined,
         notes: order.notes ?? undefined,
+      };
+    }));
+    hydrateSupplierReviews(storedSupplierReviews.map((record) => {
+      const review = record.toJSON() as any;
+      return {
+        ...review,
+        id: String(review.id),
+        purchaseOrderId: Number(review.purchaseOrderId),
+        supplierId: Number(review.supplierId),
+        reviewerId: String(review.reviewerId),
+        deliveryScore: Number(review.deliveryScore),
+        qualityScore: Number(review.qualityScore),
+        communicationScore: Number(review.communicationScore),
+        createdAt: storedDate(review.createdAt),
       };
     }));
     hydrateCustomerOrders(storedCustomerOrders.map((record) => record.toJSON() as any));

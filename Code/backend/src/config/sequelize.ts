@@ -1,8 +1,8 @@
-import dotenv from 'dotenv';
 import { Sequelize } from 'sequelize';
+import { loadEnvironment } from './environment';
 import { currentCompanyId } from './tenancy';
 
-dotenv.config();
+loadEnvironment();
 
 const dbHost = process.env.DB_HOST || 'localhost';
 const dbPort = Number(process.env.DB_PORT || 5432);

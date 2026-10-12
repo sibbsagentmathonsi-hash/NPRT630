@@ -20,7 +20,7 @@ AS $$ SELECT NULLIF(current_setting('app.company_id', true), '') $$;
 --   FOREACH table_name IN ARRAY ARRAY[
 --     'users', 'products', 'suppliers', 'warehouses', 'inventory_items',
 --     'stock_movements', 'sales', 'sale_items', 'returns', 'return_items',
---     'purchase_orders', 'purchase_order_items', 'cycle_counts',
+--     'purchase_orders', 'purchase_order_items', 'supplier_reviews', 'cycle_counts',
 --     'customer_orders', 'customer_order_items', 'inventory_reservations',
 --     'security_audit_logs', 'company_policies'
 --   ] LOOP

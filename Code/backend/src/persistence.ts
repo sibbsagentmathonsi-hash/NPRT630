@@ -9,6 +9,7 @@ import {
   InventoryReservationModel,
   PurchaseOrderItemModel,
   PurchaseOrderModel,
+  SupplierReviewModel,
   ReturnItemModel,
   ReturnModel,
   SaleItemModel,
@@ -20,7 +21,7 @@ import {
 import { ProductModel } from './models/Product';
 import { StockMovementModel } from './models/StockMovement';
 import { inventoryItems, stockMovements, type CustomerOrder, type CycleCountEntry, type SaleReceipt, type StockMovement } from './inventory';
-import type { PurchaseOrderView } from './modules/procurement/procurement';
+import type { PurchaseOrderView, SupplierReview } from './modules/procurement/procurement';
 import type { PublicUser, User } from './modules/auth/auth';
 import { currentCompanyId } from './config/tenancy';
 import type { SystemPolicy } from './config/policies';
@@ -404,6 +405,29 @@ export const persistPurchaseOrder = async (order: PurchaseOrderView): Promise<vo
       },
       transaction,
     });
+  });
+};
+
+export const persistSupplierReview = async (review: SupplierReview): Promise<void> => {
+  if (review.companyId !== currentCompanyId()) {
+    throw new Error('Supplier review company does not match the active tenant');
+  }
+  await withDatabase(async (transaction) => {
+    await SupplierReviewModel.create(
+      {
+        companyId: review.companyId,
+        purchaseOrderId: review.purchaseOrderId,
+        supplierId: review.supplierId,
+        reviewerId: review.reviewerId,
+        reviewerName: review.reviewerName,
+        deliveryScore: review.deliveryScore,
+        qualityScore: review.qualityScore,
+        communicationScore: review.communicationScore,
+        feedback: review.feedback,
+        createdAt: new Date(review.createdAt),
+      },
+      { transaction }
+    );
   });
 };
 

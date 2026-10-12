@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 
@@ -60,11 +59,14 @@ import {
   generateLowStockPurchaseOrders,
   getPurchaseOrders,
   getSupplierPerformance,
+  addSupplierReview,
   receivePurchaseOrder,
   sendPurchaseOrder,
-  suppliers,
+  SupplierReviewError,
+  validateSupplierReview,
 } from './modules/procurement/procurement';
 import { calculateForecast, calculateForecasts } from './modules/forecasting/forecasting';
+import { loadEnvironment } from './config/environment';
 import { getCurrentPolicy, isPolicyEnforced, updateSystemPolicy } from './config/policies';
 import { belongsToCompany, companies, createCompany, getCompany, runInCompany } from './config/tenancy';
 import { authorizeElectronicPayment, refundElectronicPayment, voidElectronicPayment, type ElectronicPaymentMethod } from './modules/integrations/contracts';
@@ -82,6 +84,7 @@ import {
   persistStockAdjustment,
   persistReturn,
   persistSale,
+  persistSupplierReview,
   persistUser,
   persistUserState,
   removeUser,
@@ -93,7 +96,7 @@ import {
   persistCompanyPolicy,
 } from './persistence';
 
-dotenv.config();
+loadEnvironment();
 
 export const app = express();
 const preferredPort = Number(process.env.PORT ?? 4000);
@@ -233,7 +236,7 @@ const workspacePayload = async (role: UserRole) => {
   if (role === 'WAREHOUSE_STAFF') {
     return {
       ...base,
-      suppliers,
+      suppliers: getSupplierPerformance(),
       purchaseOrders: getPurchaseOrders(),
     };
   }
@@ -241,7 +244,7 @@ const workspacePayload = async (role: UserRole) => {
   if (role === 'PROCUREMENT_STAFF') {
     return {
       ...base,
-      suppliers,
+      suppliers: getSupplierPerformance(),
       purchaseOrders: getPurchaseOrders(),
       supplierPerformance: getSupplierPerformance(),
       forecasts: calculateForecasts(),
@@ -250,7 +253,7 @@ const workspacePayload = async (role: UserRole) => {
 
   return {
     ...base,
-    suppliers,
+    suppliers: getSupplierPerformance(),
     purchaseOrders: getPurchaseOrders(),
     supplierPerformance: getSupplierPerformance(),
     forecasts: calculateForecasts(),
@@ -563,6 +566,30 @@ app.post('/api/platform/companies', authorizePlatformAdmin, async (req: any, res
   });
   if (isDatabaseReady()) await CompanyModel.create(company as any);
   return res.status(201).json({ message: 'Company created', company, companies });
+});
+
+app.patch('/api/platform/companies/:companyId', authorizePlatformAdmin, async (req: any, res) => {
+  const company = getCompany(req.params.companyId);
+  if (!company) return res.status(404).json({ error: 'Company not found' });
+
+  const updates: Partial<typeof company> = {};
+  for (const key of ['legalName', 'tradingName', 'registrationNumber', 'taxNumber', 'currency', 'timezone'] as const) {
+    if (req.body?.[key] === undefined) continue;
+    if (typeof req.body[key] !== 'string') return res.status(400).json({ error: `${key} must be a string` });
+    const value = req.body[key].trim();
+    if ((key === 'legalName' || key === 'tradingName' || key === 'currency' || key === 'timezone') && !value) {
+      return res.status(400).json({ error: `${key} cannot be empty` });
+    }
+    if (key === 'currency' && !/^[A-Za-z]{3}$/.test(value)) {
+      return res.status(400).json({ error: 'currency must be a three-letter code' });
+    }
+    updates[key] = key === 'currency' ? value.toUpperCase() : value;
+  }
+
+  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'At least one company detail must be provided' });
+  if (isDatabaseReady()) await CompanyModel.update(updates, { where: { id: company.id } });
+  Object.assign(company, updates);
+  return res.json({ message: 'Company details updated', company, companies });
 });
 
 app.post('/api/platform/companies/:companyId/admin', authorizePlatformAdmin, async (req: any, res) => {
@@ -1065,7 +1092,7 @@ app.get('/api/cycle-counts', authorize('MANAGER', 'WAREHOUSE_STAFF'), (_req, res
 // 7. PROCUREMENT & SUPPLIERS
 // ==========================================
 app.get('/api/suppliers', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
-  res.json({ suppliers });
+  res.json({ suppliers: getSupplierPerformance() });
 });
 
 app.get('/api/purchase-orders', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
@@ -1155,6 +1182,41 @@ app.patch('/api/purchase-orders/:id/receive', authorize('MANAGER', 'WAREHOUSE_ST
     return res.json({ message: 'Purchase order received', purchaseOrder, purchaseOrders: getPurchaseOrders(), ...inventoryPayload() });
   } catch (error) {
     return handleDomainError(res, error, 'Unable to receive purchase order');
+  }
+});
+
+app.post('/api/purchase-orders/:id/supplier-review', authorize('PROCUREMENT_STAFF'), async (req: any, res) => {
+  try {
+    const purchaseOrderId = Number(req.params.id);
+    const feedback = req.body?.feedback;
+    if (feedback !== undefined && typeof feedback !== 'string') {
+      return res.status(400).json({ error: 'Feedback must be text' });
+    }
+    const review = validateSupplierReview(purchaseOrderId, {
+      deliveryScore: req.body?.deliveryScore,
+      qualityScore: req.body?.qualityScore,
+      communicationScore: req.body?.communicationScore,
+      feedback,
+      reviewerId: String(req.user.id),
+      reviewerName: actorName(req),
+    });
+    await persistSupplierReview(review);
+    addSupplierReview(review);
+    return res.status(201).json({
+      message: 'Supplier review submitted',
+      supplierReview: review,
+      suppliers: getSupplierPerformance(),
+      purchaseOrders: getPurchaseOrders(),
+    });
+  } catch (error) {
+    if (error instanceof SupplierReviewError) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({ error: 'This purchase order has already been reviewed' });
+    }
+    console.error('Unable to submit supplier review', error);
+    return res.status(500).json({ error: 'Unable to submit supplier review' });
   }
 });
 

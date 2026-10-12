@@ -8,12 +8,15 @@ import {
   generateLowStockPurchaseOrders,
   getPurchaseOrders,
   getSupplierPerformance,
+  addSupplierReview,
   purchaseOrders,
   receivePurchaseOrder,
   sendPurchaseOrder,
   suppliers,
+  validateSupplierReview,
 } from './procurement';
 import { findProductBySku, getInventoryItems } from '../../inventory';
+import { runInCompany } from '../../config/tenancy';
 
 test('procurement: getPurchaseOrders returns formatted view with supplier names and remaining qty', () => {
   const orders = getPurchaseOrders();
@@ -125,7 +128,72 @@ test('procurement: getSupplierPerformance calculates ratings, priorities, and ri
   for (const s of performance) {
     assert.ok(s.id);
     assert.ok(s.name);
-    assert.ok(['High', 'Medium'].includes(s.suggestedPriority));
-    assert.ok(['Normal', 'Watch'].includes(s.risk));
+    assert.equal(s.rating, 0);
+    assert.equal(s.reviewCount, 0);
+    assert.ok(['High', 'Medium', 'Unrated'].includes(s.suggestedPriority));
+    assert.ok(['Normal', 'Watch', 'Unrated'].includes(s.risk));
   }
+});
+
+test('procurement: reviews require full receipt and produce supplier averages once per PO', () => {
+  const order = createPurchaseOrder(3, 'MILK-001', 'Fresh Full Cream Milk 1L', 1);
+  const reviewInput = {
+    deliveryScore: 5,
+    qualityScore: 4,
+    communicationScore: 5,
+    reviewerId: 'reviewer-1',
+    reviewerName: 'Procurement Reviewer',
+  };
+
+  assert.throws(() => validateSupplierReview(order.id, reviewInput), /fully received/);
+
+  approvePurchaseOrder(order.id);
+  sendPurchaseOrder(order.id);
+  receivePurchaseOrder(order.id, 1, 'Warehouse Staff');
+
+  assert.throws(
+    () => validateSupplierReview(order.id, { ...reviewInput, deliveryScore: 6 }),
+    /whole number from 1 to 5/
+  );
+  const review = validateSupplierReview(order.id, reviewInput);
+  addSupplierReview(review);
+
+  const supplier = getSupplierPerformance().find((entry) => entry.id === order.supplierId);
+  assert.ok(supplier);
+  assert.equal(supplier.reviewCount, 1);
+  assert.equal(supplier.averageDeliveryScore, 5);
+  assert.equal(supplier.averageQualityScore, 4);
+  assert.equal(supplier.averageCommunicationScore, 5);
+  assert.equal(supplier.rating, 4.67);
+  assert.equal(getPurchaseOrders().find((entry) => entry.id === order.id)?.supplierReview?.reviewerName, 'Procurement Reviewer');
+  assert.throws(() => validateSupplierReview(order.id, reviewInput), /already been reviewed/);
+
+  const secondOrder = createPurchaseOrder(3, 'MILK-001', 'Fresh Full Cream Milk 1L', 1);
+  approvePurchaseOrder(secondOrder.id);
+  sendPurchaseOrder(secondOrder.id);
+  receivePurchaseOrder(secondOrder.id, 1, 'Warehouse Staff');
+  addSupplierReview(validateSupplierReview(secondOrder.id, {
+    ...reviewInput,
+    deliveryScore: 1,
+    qualityScore: 2,
+    communicationScore: 3,
+  }));
+
+  const averagedSupplier = getSupplierPerformance().find((entry) => entry.id === order.supplierId);
+  assert.ok(averagedSupplier);
+  assert.equal(averagedSupplier.reviewCount, 2);
+  assert.equal(averagedSupplier.rating, 3.33);
+  assert.equal(averagedSupplier.averageDeliveryScore, 3);
+  assert.equal(averagedSupplier.averageQualityScore, 3);
+  assert.equal(averagedSupplier.averageCommunicationScore, 4);
+
+  let otherCompanyError: unknown;
+  runInCompany('company-other', () => {
+    try {
+      validateSupplierReview(order.id, reviewInput);
+    } catch (error) {
+      otherCompanyError = error;
+    }
+  });
+  assert.match(String(otherCompanyError), /Purchase order not found/);
 });

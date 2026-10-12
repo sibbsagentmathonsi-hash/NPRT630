@@ -26,6 +26,38 @@ test('production disables demo sign-in and applies the configured CORS allowlist
     const admin = users.find((user) => user.role === 'ADMIN');
     assert.ok(admin);
     const adminToken = generateToken(toPublicUser(admin));
+    const managerToken = generateToken({ ...toPublicUser(admin), role: 'MANAGER' });
+    const managerReviewResponse = await fetch(`${baseUrl}/api/purchase-orders/999999999/supplier-review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: ['Bearer', managerToken].join(' ') },
+      body: JSON.stringify({ deliveryScore: 5, qualityScore: 5, communicationScore: 5 }),
+    });
+    assert.equal(managerReviewResponse.status, 403);
+
+    const procurementToken = generateToken({ ...toPublicUser(admin), role: 'PROCUREMENT_STAFF' });
+    const missingOrderReviewResponse = await fetch(`${baseUrl}/api/purchase-orders/999999999/supplier-review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: ['Bearer', procurementToken].join(' ') },
+      body: JSON.stringify({ deliveryScore: 5, qualityScore: 5, communicationScore: 5 }),
+    });
+    assert.equal(missingOrderReviewResponse.status, 404);
+
+    const companyUpdateResponse = await fetch(`${baseUrl}/api/platform/companies/company-default`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ legalName: 'Updated Demo Company' }),
+    });
+    assert.equal(companyUpdateResponse.status, 200);
+    const companyUpdate = await companyUpdateResponse.json() as { company: { legalName: string } };
+    assert.equal(companyUpdate.company.legalName, 'Updated Demo Company');
+
+    const invalidCompanyUpdateResponse = await fetch(`${baseUrl}/api/platform/companies/company-default`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ currency: 'US dollars' }),
+    });
+    assert.equal(invalidCompanyUpdateResponse.status, 400);
+
     const resetResponse = await fetch(`${baseUrl}/api/admin/employees/${admin.id}/reset-password`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },

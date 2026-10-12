@@ -229,16 +229,10 @@ export default function WorkerApp() {
             <div className="app-brand-name">
               SyncStock <span style={{ color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600 }}>2.0</span>
             </div>
-            <div className="app-brand-caption">Worker Operations / Live network</div>
           </div>
         </div>
 
         <div className="app-header-actions">
-          <div className="sync-status">
-            <span className="sync-dot" />
-            <span>{loading ? 'Syncing' : 'PostgreSQL Synced'}</span>
-          </div>
-
           <button
             className="btn btn-secondary btn-sm"
             style={{ padding: '6px', borderRadius: 'var(--radius-md)' }}
@@ -269,7 +263,7 @@ export default function WorkerApp() {
               <div style={{ textAlign: 'left', lineHeight: 1.15 }}>
                 <div style={{ fontSize: '0.8125rem', fontWeight: 700 }}>{currentUser.name}</div>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                  <span className="form-input-mono employee-id-inline">{currentUser.employeeId}</span> - {currentUser.role}
+                  {currentUser.role}
                 </div>
               </div>
 

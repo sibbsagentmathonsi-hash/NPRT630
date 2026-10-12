@@ -20,7 +20,7 @@ const rolesList = [
 export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionExpired, initialTab = 'employees' }) => {
   const isPlatformAdmin = Boolean(currentUser?.isPlatformAdmin);
   const [activeTab, setActiveTab] = useState('employees'); // 'employees' | 'products' | 'procurement' | 'warehouses' | 'audit-logs' | 'policies' | 'companies'
-  useEffect(() => setActiveTab(['employees', 'products', 'procurement', 'warehouses', 'audit-logs', 'policies', 'companies'].includes(initialTab) ? initialTab : 'employees'), [initialTab]);
+  useEffect(() => setActiveTab(initialTab === 'add-company' ? 'companies' : ['employees', 'products', 'procurement', 'warehouses', 'audit-logs', 'policies', 'companies'].includes(initialTab) ? initialTab : 'employees'), [initialTab]);
   const [employees, setEmployees] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [products, setProducts] = useState([]);
@@ -40,6 +40,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
   const [companySaving, setCompanySaving] = useState(false);
   const [platformCompanies, setPlatformCompanies] = useState([]);
   const [companyProvisioning, setCompanyProvisioning] = useState(false);
+  const [editingCompany, setEditingCompany] = useState(null);
   const [newCompany, setNewCompany] = useState({ legalName: '', tradingName: '', registrationNumber: '', taxNumber: '', currency: 'ZAR', timezone: 'Africa/Johannesburg' });
   const [companyAdmin, setCompanyAdmin] = useState({ companyId: '', name: '', email: '', tempPassword: 'TempPass123!' });
 
@@ -259,6 +260,28 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
     }
   };
 
+  const savePlatformCompany = async (event) => {
+    event.preventDefault();
+    if (!editingCompany) return;
+    setCompanyProvisioning(true);
+    try {
+      const res = await fetch(`${apiBase}/api/platform/companies/${editingCompany.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(editingCompany),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to save company details');
+      setPlatformCompanies(data.companies || []);
+      setEditingCompany(null);
+      onNotify?.('Company details saved', 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setCompanyProvisioning(false);
+    }
+  };
+
   const provisionCompanyAdmin = async (event) => {
     event.preventDefault();
     setCompanyProvisioning(true);
@@ -467,6 +490,16 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
     const matchesQuery = !query || [log.id, log.actor, log.actorRole, log.eventType, log.targetUserId, log.details].some((value) => String(value || '').toLowerCase().includes(query));
     return matchesQuery && (auditStatus === 'ALL' || log.status === auditStatus);
   });
+  const sectionHeaders = {
+    employees: { icon: 'users', label: 'People & access', title: 'Human Resources & Governance Portal', description: 'Manage employee accounts, roles, onboarding, and access security.' },
+    warehouses: { icon: 'truck', label: 'Workspace', title: 'Warehouse management', description: 'Configure warehouse locations, capacity, and operational status.' },
+    products: { icon: 'barcode', label: 'Workspace', title: 'Product catalogue', description: 'Review products, pricing, stock levels, and catalogue status.' },
+    procurement: { icon: 'clipboard-list', label: 'Governance', title: 'Procurement', description: 'Review suppliers and monitor purchase orders across the business.' },
+    'audit-logs': { icon: 'check-circle', label: 'Governance', title: 'Activity log', description: 'Review administrative, authentication, and operational events.' },
+    policies: { icon: 'shield-check', label: 'Governance', title: 'Policies & security', description: 'Manage company profile, security controls, and compliance settings.' },
+    companies: { icon: 'layers', label: 'Platform', title: 'Company management', description: 'Create company workspaces, manage company details, and provision administrators.' },
+  };
+  const sectionHeader = sectionHeaders[activeTab] || sectionHeaders.employees;
 
   return (
     <div className="portal-shell">
@@ -474,67 +507,101 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
         <div className="portal-hero-copy">
           <div className="portal-hero-badges">
             <span className="badge badge-purple" style={{ padding: '4px 10px', fontSize: '0.8125rem' }}>
-              <Icon name="shield-check" size={16} /> Enterprise Administration System
+              <Icon name={sectionHeader.icon} size={16} /> {sectionHeader.label}
             </span>
-            <span className="portal-kicker">Security Level: Tier 1 Root</span>
+            <span className="portal-kicker">{isPlatformAdmin ? 'Platform administrator' : 'Administrator workspace'}</span>
           </div>
-          <h1 className="portal-title">Human Resources & Governance Portal</h1>
+          <h1 className="portal-title">{sectionHeader.title}</h1>
+          <p className="portal-description">{sectionHeader.description}</p>
         </div>
 
-        <div className="portal-hero-actions">
-          <button
-            onClick={() => {
-              setRegSuccessData(null);
-              setShowRegModal(true);
-            }}
-            className="btn btn-primary"
-          >
-            <Icon name="plus" size={16} /> Register New Employee
-          </button>
+        {activeTab === 'employees' && (
+          <div className="portal-hero-actions">
+            <button
+              onClick={() => {
+                setRegSuccessData(null);
+                setShowRegModal(true);
+              }}
+              className="btn btn-primary"
+            >
+              <Icon name="plus" size={16} /> Register New Employee
+            </button>
+          </div>
+        )}
+      </div>
+
+      {activeTab === 'companies' && isPlatformAdmin && (
+        <div>
+          {editingCompany && (
+            <form className="card company-management-card" onSubmit={savePlatformCompany}>
+              <div className="card-header">
+                <h2 className="card-title"><Icon name="building" size={18} /> Edit company details</h2>
+                <div className="portal-hero-actions">
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditingCompany(null)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary btn-sm" disabled={companyProvisioning}>{companyProvisioning ? 'Saving…' : 'Save details'}</button>
+                </div>
+              </div>
+              <div className="policy-form-grid">
+                <label className="form-label">Legal name<input className="form-input" required value={editingCompany.legalName} onChange={(e) => setEditingCompany({ ...editingCompany, legalName: e.target.value })} /></label>
+                <label className="form-label">Trading name<input className="form-input" required value={editingCompany.tradingName} onChange={(e) => setEditingCompany({ ...editingCompany, tradingName: e.target.value })} /></label>
+                <label className="form-label">Registration number<input className="form-input" value={editingCompany.registrationNumber || ''} onChange={(e) => setEditingCompany({ ...editingCompany, registrationNumber: e.target.value })} /></label>
+                <label className="form-label">Tax number<input className="form-input" value={editingCompany.taxNumber || ''} onChange={(e) => setEditingCompany({ ...editingCompany, taxNumber: e.target.value })} /></label>
+                <label className="form-label">Currency<input className="form-input" required minLength="3" maxLength="3" value={editingCompany.currency} onChange={(e) => setEditingCompany({ ...editingCompany, currency: e.target.value.toUpperCase() })} /></label>
+                <label className="form-label">Timezone<input className="form-input" required value={editingCompany.timezone} onChange={(e) => setEditingCompany({ ...editingCompany, timezone: e.target.value })} /></label>
+              </div>
+            </form>
+          )}
+          <div className="card company-management-card company-list-card">
+            <div className="card-header"><h2 className="card-title"><Icon name="layers" size={18} /> Company directory</h2></div>
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead><tr><th>Company</th><th>Company ID</th><th>Registration / Tax</th><th>Currency</th><th>Timezone</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {platformCompanies.map((item) => (
+                    <tr key={item.id}>
+                      <td><strong>{item.tradingName}</strong><small>{item.legalName}</small></td>
+                      <td className="form-input-mono">{item.id}</td>
+                      <td>{item.registrationNumber || '—'}<small>{item.taxNumber || 'No tax number'}</small></td>
+                      <td>{item.currency}</td>
+                      <td>{item.timezone}</td>
+                      <td><span className="badge badge-success">{item.subscriptionStatus}</span></td>
+                      <td><button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditingCompany({ ...item })}><Icon name="edit" size={14} /> Edit details</button></td>
+                    </tr>
+                  ))}
+                  {platformCompanies.length === 0 && <tr><td colSpan="7">No companies are available.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="portal-tab-bar">
-        {isPlatformAdmin && <button className={`portal-tab ${activeTab === 'companies' ? 'is-active' : ''}`} onClick={() => setActiveTab('companies')}><Icon name="box" size={16} /> Companies ({platformCompanies.length})</button>}
-        <button
-          className={`portal-tab ${activeTab === 'employees' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('employees')}
-        >
-          <Icon name="users" size={16} /> Employee & Sector Directory ({employees.length})
-        </button>
-        <button
-          className={`portal-tab ${activeTab === 'warehouses' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('warehouses')}
-        >
-          <Icon name="box" size={16} /> Multi-Warehouse Locations ({warehouses.length})
-        </button>
-        <button
-          className={`portal-tab ${activeTab === 'products' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('products')}
-        >
-          <Icon name="barcode" size={16} /> Product Catalogue ({products.length})
-        </button>
-        <button
-          className={`portal-tab ${activeTab === 'procurement' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('procurement')}
-        >
-          <Icon name="truck" size={16} /> Procurement ({purchaseOrders.length})
-        </button>
-        <button
-          className={`portal-tab ${activeTab === 'audit-logs' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('audit-logs')}
-        >
-          <Icon name="clipboard-list" size={16} /> Security & Audit Logs ({auditLogs.length})
-        </button>
-        <button
-          className={`portal-tab ${activeTab === 'policies' ? 'is-active' : ''}`}
-          onClick={() => setActiveTab('policies')}
-        >
-          <Icon name="lock" size={16} /> System Policies & Security Compliance
-        </button>
-      </div>
-
-      {activeTab === 'companies' && isPlatformAdmin && <div className="company-management-grid"><form className="card company-management-card" onSubmit={createCompany}><div className="card-header"><h2 className="card-title"><Icon name="building" size={18} /> Add company</h2><button className="btn btn-primary btn-sm" disabled={companyProvisioning}>{companyProvisioning ? 'Creating…' : 'Create company'}</button></div><p className="policy-help">Create an isolated company workspace. Its administrator will receive a separate login.</p><div className="policy-form-grid"><label className="form-label">Legal name<input className="form-input" required value={newCompany.legalName} onChange={(e) => setNewCompany({ ...newCompany, legalName: e.target.value })} /></label><label className="form-label">Trading name<input className="form-input" required value={newCompany.tradingName} onChange={(e) => setNewCompany({ ...newCompany, tradingName: e.target.value })} /></label><label className="form-label">Registration number<input className="form-input" value={newCompany.registrationNumber} onChange={(e) => setNewCompany({ ...newCompany, registrationNumber: e.target.value })} /></label><label className="form-label">Tax number<input className="form-input" value={newCompany.taxNumber} onChange={(e) => setNewCompany({ ...newCompany, taxNumber: e.target.value })} /></label><label className="form-label">Currency<input className="form-input" required maxLength="3" value={newCompany.currency} onChange={(e) => setNewCompany({ ...newCompany, currency: e.target.value.toUpperCase() })} /></label><label className="form-label">Timezone<input className="form-input" required value={newCompany.timezone} onChange={(e) => setNewCompany({ ...newCompany, timezone: e.target.value })} /></label></div></form><form className="card company-management-card" onSubmit={provisionCompanyAdmin}><div className="card-header"><h2 className="card-title"><Icon name="user-plus" size={18} /> Provision administrator</h2><button className="btn btn-primary btn-sm" disabled={companyProvisioning || !companyAdmin.companyId}>{companyProvisioning ? 'Provisioning…' : 'Create administrator'}</button></div><p className="policy-help">Only a platform administrator can provision the first administrator for a company.</p><div className="policy-form-grid"><label className="form-label">Company<select className="form-input" required value={companyAdmin.companyId} onChange={(e) => setCompanyAdmin({ ...companyAdmin, companyId: e.target.value })}><option value="">Select company</option>{platformCompanies.map((item) => <option key={item.id} value={item.id}>{item.tradingName}</option>)}</select></label><label className="form-label">Administrator name<input className="form-input" required value={companyAdmin.name} onChange={(e) => setCompanyAdmin({ ...companyAdmin, name: e.target.value })} /></label><label className="form-label">Administrator email<input className="form-input" type="email" required value={companyAdmin.email} onChange={(e) => setCompanyAdmin({ ...companyAdmin, email: e.target.value })} /></label><label className="form-label">Temporary password<input className="form-input" required value={companyAdmin.tempPassword} onChange={(e) => setCompanyAdmin({ ...companyAdmin, tempPassword: e.target.value })} /></label></div></form><div className="card company-management-card company-list-card"><div className="card-header"><h2 className="card-title"><Icon name="layers" size={18} /> Tenant directory</h2></div><div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Company</th><th>Company ID</th><th>Currency</th><th>Status</th></tr></thead><tbody>{platformCompanies.map((item) => <tr key={item.id}><td><strong>{item.tradingName}</strong><small>{item.legalName}</small></td><td className="form-input-mono">{item.id}</td><td>{item.currency}</td><td><span className="badge badge-success">{item.subscriptionStatus}</span></td></tr>)}</tbody></table></div></div></div>}
+      {activeTab === 'companies' && isPlatformAdmin && (
+        <div className="company-management-grid">
+          <form className="card company-management-card" onSubmit={createCompany}>
+            <div className="card-header"><h2 className="card-title"><Icon name="building" size={18} /> Add company</h2><button className="btn btn-primary btn-sm" disabled={companyProvisioning}>{companyProvisioning ? 'Creating…' : 'Create company'}</button></div>
+            <p className="policy-help">Create an isolated company workspace, then provision its administrator.</p>
+            <div className="policy-form-grid">
+              <label className="form-label">Legal name<input className="form-input" required value={newCompany.legalName} onChange={(e) => setNewCompany({ ...newCompany, legalName: e.target.value })} /></label>
+              <label className="form-label">Trading name<input className="form-input" required value={newCompany.tradingName} onChange={(e) => setNewCompany({ ...newCompany, tradingName: e.target.value })} /></label>
+              <label className="form-label">Registration number<input className="form-input" value={newCompany.registrationNumber} onChange={(e) => setNewCompany({ ...newCompany, registrationNumber: e.target.value })} /></label>
+              <label className="form-label">Tax number<input className="form-input" value={newCompany.taxNumber} onChange={(e) => setNewCompany({ ...newCompany, taxNumber: e.target.value })} /></label>
+              <label className="form-label">Currency<input className="form-input" required minLength="3" maxLength="3" value={newCompany.currency} onChange={(e) => setNewCompany({ ...newCompany, currency: e.target.value.toUpperCase() })} /></label>
+              <label className="form-label">Timezone<input className="form-input" required value={newCompany.timezone} onChange={(e) => setNewCompany({ ...newCompany, timezone: e.target.value })} /></label>
+            </div>
+          </form>
+          <form className="card company-management-card" onSubmit={provisionCompanyAdmin}>
+            <div className="card-header"><h2 className="card-title"><Icon name="user-plus" size={18} /> Provision administrator</h2><button className="btn btn-primary btn-sm" disabled={companyProvisioning || !companyAdmin.companyId}>{companyProvisioning ? 'Provisioning…' : 'Create administrator'}</button></div>
+            <p className="policy-help">Only a platform administrator can provision a company’s first administrator.</p>
+            <div className="policy-form-grid">
+              <label className="form-label">Company<select className="form-input" required value={companyAdmin.companyId} onChange={(e) => setCompanyAdmin({ ...companyAdmin, companyId: e.target.value })}><option value="">Select company</option>{platformCompanies.map((item) => <option key={item.id} value={item.id}>{item.tradingName}</option>)}</select></label>
+              <label className="form-label">Administrator name<input className="form-input" required value={companyAdmin.name} onChange={(e) => setCompanyAdmin({ ...companyAdmin, name: e.target.value })} /></label>
+              <label className="form-label">Administrator email<input className="form-input" type="email" required value={companyAdmin.email} onChange={(e) => setCompanyAdmin({ ...companyAdmin, email: e.target.value })} /></label>
+              <label className="form-label">Temporary password<input className="form-input" type="password" required value={companyAdmin.tempPassword} onChange={(e) => setCompanyAdmin({ ...companyAdmin, tempPassword: e.target.value })} /></label>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* TAB 1: EMPLOYEE DIRECTORY & SECTOR MANAGEMENT */}
       {activeTab === 'employees' && (
@@ -721,10 +788,10 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
       {/* TAB 2: PRODUCT CATALOGUE */}
       {activeTab === 'products' && (
         <div className="table-container card" style={{ padding: 0 }}>
-          <div className="card-header">
+          <div className="card-header product-catalogue-header">
             <div>
               <h3 className="card-title"><Icon name="barcode" size={18} /> Product Catalogue Oversight</h3>
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Products, generated barcodes, pricing, stock, and status.</p>
+              <p className="product-catalogue-description">Products, generated barcodes, pricing, stock, and status.</p>
             </div>
             <button className="btn btn-secondary btn-sm" onClick={fetchOperationalData}><Icon name="refresh-cw" size={14} /> Refresh</button>
           </div>
@@ -758,7 +825,22 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
         <div>
           <div className="grid-cols-3" style={{ marginBottom: '1.25rem' }}>
             {suppliers.map((supplier) => (
-              <div className="card" key={supplier.id}><span className="badge badge-primary">Supplier</span><h3 style={{ marginTop: '8px' }}>{supplier.name}</h3><p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>{supplier.contact}</p><p style={{ marginTop: '8px' }}>Lead time: {supplier.leadTimeDays} days · Rating: {supplier.rating}</p></div>
+              <div className="card" key={supplier.id}>
+                <span className="badge badge-primary">Supplier</span>
+                <h3 style={{ marginTop: '8px' }}>{supplier.name}</h3>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>{supplier.contact}</p>
+                <p style={{ marginTop: '8px' }}>Lead time: {supplier.leadTimeDays} days</p>
+                <p style={{ marginTop: '8px' }}>
+                  {supplier.reviewCount
+                    ? `Rating: ${supplier.rating} / 5 · ${supplier.reviewCount} PO review${supplier.reviewCount === 1 ? '' : 's'}`
+                    : 'Not rated yet'}
+                </p>
+                {supplier.reviewCount > 0 && (
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', marginTop: '4px' }}>
+                    Delivery {Number(supplier.averageDeliveryScore).toFixed(2)} · Quality {Number(supplier.averageQualityScore).toFixed(2)} · Communication {Number(supplier.averageCommunicationScore).toFixed(2)}
+                  </p>
+                )}
+              </div>
             ))}
           </div>
           <div className="table-container card" style={{ padding: 0 }}>

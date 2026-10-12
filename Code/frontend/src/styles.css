@@ -619,6 +619,20 @@ body {
   margin-bottom: 1rem;
 }
 
+.analytics-card-header {
+  flex-wrap: wrap;
+}
+
+.analytics-card-header .card-title {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.analytics-card-header .badge {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .card-title {
   font-size: 1rem;
   font-weight: 700;
@@ -1033,7 +1047,7 @@ body {
   flex-direction: column;
   position: relative;
   isolation: isolate;
-  overflow: hidden;
+  overflow-x: clip;
 }
 
 .worker-app::before {
@@ -1363,6 +1377,294 @@ body {
 .policy-deployment { display: flex; gap: .6rem; padding: .75rem; border-radius: var(--radius-md); border: 1px solid var(--warning-border); background: var(--warning-light); color: var(--warning-text); }
 .policy-deployment.is-ready { border-color: var(--success-border); background: var(--success-light); color: var(--success-text); }
 .policy-deployment span { display: grid; gap: .15rem; }
+
+/* Admin portal layout: keep section content aligned and prevent dense views from collapsing. */
+.portal-shell {
+  width: 100%;
+  min-width: 0;
+  padding: clamp(1rem, 2.2vw, 1.75rem);
+}
+
+.portal-shell > *,
+.portal-shell .card,
+.portal-shell .company-management-grid > * {
+  min-width: 0;
+}
+
+.portal-shell .portal-hero {
+  min-height: 148px;
+  align-items: center;
+  padding: clamp(1.1rem, 2.5vw, 1.75rem);
+  margin-bottom: 1.25rem;
+  gap: 1.5rem;
+}
+
+.portal-shell .portal-hero::before {
+  width: 6px;
+  background: linear-gradient(180deg, var(--primary), var(--primary-light));
+  border: 0;
+}
+
+.portal-shell .portal-hero-copy {
+  min-width: 0;
+}
+
+.portal-shell .portal-title {
+  max-width: 30ch;
+  font-size: clamp(1.55rem, 2.8vw, 2.25rem);
+  line-height: 1.14;
+  overflow-wrap: anywhere;
+}
+
+.portal-shell .portal-description {
+  max-width: 70ch;
+  line-height: 1.55;
+}
+
+.portal-shell .portal-hero-actions {
+  flex: 0 0 auto;
+}
+
+.portal-shell .card {
+  padding: clamp(1rem, 2vw, 1.35rem);
+}
+
+.portal-shell .card-header {
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.portal-shell .card-title {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.portal-shell .policy-form-grid {
+  align-items: start;
+  gap: 1rem;
+}
+
+.portal-shell .form-label {
+  min-width: 0;
+}
+
+.portal-shell .form-input,
+.portal-shell .form-select,
+.portal-shell .form-textarea {
+  min-width: 0;
+  min-height: 42px;
+}
+
+.portal-shell .product-catalogue-header {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1rem;
+  min-height: 64px;
+  padding: .75rem 1rem;
+  margin-bottom: 0;
+}
+
+.product-catalogue-header > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.product-catalogue-header .card-title {
+  gap: .55rem;
+  line-height: 1.35;
+}
+
+.product-catalogue-description {
+  margin-top: .2rem;
+  color: var(--text-muted);
+  font-size: .75rem;
+  line-height: 1.45;
+}
+
+.portal-shell .product-catalogue-header > .btn {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+
+.company-management-grid {
+  align-items: start;
+  gap: 1.1rem;
+}
+
+.company-management-card .policy-help {
+  max-width: 64ch;
+  line-height: 1.55;
+}
+
+.company-list-card .admin-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.company-list-card .admin-table {
+  width: 100%;
+  min-width: 900px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: .82rem;
+}
+
+.company-list-card .admin-table th,
+.company-list-card .admin-table td {
+  padding: .8rem .75rem;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+
+.company-list-card .admin-table th {
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  font-size: .7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.company-list-card .admin-table td {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.company-list-card .admin-table th:nth-child(1) { width: 21%; }
+.company-list-card .admin-table th:nth-child(2) { width: 15%; }
+.company-list-card .admin-table th:nth-child(3) { width: 18%; }
+.company-list-card .admin-table th:nth-child(4) { width: 8%; }
+.company-list-card .admin-table th:nth-child(5) { width: 16%; }
+.company-list-card .admin-table th:nth-child(6) { width: 8%; }
+.company-list-card .admin-table th:nth-child(7) { width: 14%; }
+
+.company-list-card .admin-table td:first-child strong,
+.company-list-card .admin-table td:first-child small,
+.company-list-card .admin-table td:nth-child(3) small {
+  display: block;
+}
+
+.company-list-card .admin-table td:first-child strong {
+  margin-bottom: .2rem;
+  line-height: 1.35;
+}
+
+.company-list-card .admin-table td small {
+  margin-top: .15rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.company-list-card .admin-table td:nth-child(2),
+.company-list-card .admin-table td:nth-child(4),
+.company-list-card .admin-table td:nth-child(5),
+.company-list-card .admin-table td:nth-child(6),
+.company-list-card .admin-table td:nth-child(7) {
+  white-space: nowrap;
+}
+
+.company-list-card .admin-table td:nth-child(2) {
+  font-size: .75rem;
+  overflow-wrap: anywhere;
+}
+
+.company-list-card .admin-table tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .portal-shell .portal-hero {
+    align-items: flex-start;
+  }
+
+  .portal-shell .portal-hero-actions {
+    width: auto;
+  }
+
+  .portal-shell .portal-hero-actions .btn {
+    width: auto;
+  }
+
+  .policy-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 800px) {
+  .company-management-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .company-list-card {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .portal-shell {
+    padding: .85rem;
+  }
+
+  .portal-shell .portal-hero {
+    min-height: 0;
+    gap: 1rem;
+    padding: 1.1rem;
+  }
+
+  .portal-shell .portal-hero-actions,
+  .portal-shell .portal-hero-actions .btn {
+    width: 100%;
+  }
+
+  .portal-shell .card-header {
+    align-items: stretch;
+  }
+
+  .portal-shell .card-header > .btn,
+  .portal-shell .card-header .portal-hero-actions {
+    width: 100%;
+  }
+
+  .portal-shell .card-header .portal-hero-actions {
+    justify-content: flex-end;
+  }
+
+  .portal-shell .product-catalogue-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .portal-shell .product-catalogue-header > div,
+  .portal-shell .product-catalogue-header > .btn {
+    flex-basis: 100%;
+    width: 100%;
+  }
+
+  .portal-shell .policy-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .portal-shell .admin-filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .portal-shell .admin-filter-bar .form-select {
+    width: 100%;
+  }
+
+  .portal-shell .grid-cols-3,
+  .portal-shell .grid-cols-4,
+  .portal-shell .grid-cols-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .policy-deployment small { font-size: .7rem; }
 .policy-history-row { display: grid; grid-template-columns: auto 1fr auto; gap: .55rem; align-items: baseline; padding: .55rem 0; border-bottom: 1px solid var(--border-color); font-size: .7rem; }
 .policy-history-row span { color: var(--text-secondary); }
@@ -1411,6 +1713,7 @@ html.light, html.light body { background: var(--bg-primary); color: var(--text-p
 .portal-hero::before { width: 20%; background: linear-gradient(180deg, var(--primary-light), transparent); border-right-color: var(--primary-border); }
 .portal-title { color: var(--text-primary); }
 .portal-kicker { color: var(--text-muted); }
+.portal-description { position: relative; z-index: 1; margin-top: .55rem; color: var(--text-secondary); font-size: .875rem; }
 .kpi-card { min-height: 142px; }
 .card-header { gap: 1rem; }
 .card-title { letter-spacing: -.02em; }
@@ -1424,7 +1727,7 @@ html.light, html.light body { background: var(--bg-primary); color: var(--text-p
 
 /* Primary navigation shell */
 .app-layout { display: flex; flex: 1; min-height: calc(100vh - 68px); }
-.app-sidebar { position: sticky; top: 68px; width: 236px; height: calc(100vh - 68px); flex: 0 0 236px; display: flex; flex-direction: column; padding: 1.1rem .8rem .9rem; background: var(--bg-surface); border-right: 1px solid var(--border-color); transition: width 180ms ease, flex-basis 180ms ease; z-index: 30; }
+.app-sidebar { position: fixed; top: 68px; bottom: 0; left: 0; width: 236px; height: auto; display: flex; flex-direction: column; padding: 1.1rem .8rem .9rem; background: var(--bg-surface); border-right: 1px solid var(--border-color); transition: width 180ms ease, top 240ms ease; z-index: 40; }
 .app-sidebar.is-collapsed { width: 68px; flex-basis: 68px; }
 .sidebar-toggle { align-self: flex-end; width: 28px; height: 28px; margin: 0 .25rem .9rem; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-subtle); color: var(--text-secondary); cursor: pointer; font-size: 1.1rem; line-height: 1; }
 .sidebar-toggle:hover { border-color: var(--primary-border); color: var(--text-primary); }
@@ -1440,14 +1743,19 @@ html.light, html.light body { background: var(--bg-primary); color: var(--text-p
 .app-sidebar.is-collapsed .sidebar-section-label, .app-sidebar.is-collapsed .sidebar-item-label { display: none; }
 .app-sidebar.is-collapsed .sidebar-item { justify-content: center; padding-inline: 0; }
 .app-sidebar.is-collapsed .sidebar-footer { justify-content: center; padding-inline: 0; }
-.app-main.has-sidebar { min-width: 0; width: calc(100% - 236px); }
-.app-sidebar.is-collapsed + .app-main.has-sidebar { width: calc(100% - 68px); }
+.app-main.has-sidebar { min-width: 0; width: auto; margin-left: 236px; }
+.app-sidebar.is-collapsed + .app-main.has-sidebar { margin-left: 68px; }
+.header-compact .app-sidebar { top: 60px; }
 
 @media (max-width: 800px) {
-  .app-sidebar { position: fixed; top: 64px; left: 0; height: calc(100vh - 64px); box-shadow: var(--shadow-lg); transform: translateX(0); }
+  .app-sidebar { top: 68px; bottom: 0; height: auto; box-shadow: var(--shadow-lg); transform: translateX(0); }
   .app-sidebar.is-collapsed { width: 0; flex-basis: 0; padding: 1rem 0; border: 0; overflow: hidden; transform: translateX(-100%); }
-  .app-main.has-sidebar { width: 100%; }
+  .app-main.has-sidebar { width: 100%; margin-left: 0; }
   .sidebar-toggle { position: absolute; right: -36px; top: 12px; background: var(--bg-surface); box-shadow: var(--shadow-sm); }
+}
+
+@media (max-width: 720px) {
+  .app-sidebar { top: 64px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

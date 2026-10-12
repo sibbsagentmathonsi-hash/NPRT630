@@ -1,13 +1,13 @@
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { generateSecret, generateURI, verifySync } from 'otplib';
+import { loadEnvironment } from '../../config/environment';
 import { getCurrentPolicy, isPolicyEnforced } from '../../config/policies';
 import { DEFAULT_COMPANY_ID, currentCompanyId } from '../../config/tenancy';
 
-dotenv.config();
+loadEnvironment();
 
 export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAREHOUSE_STAFF' | 'PROCUREMENT_STAFF';
 

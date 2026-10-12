@@ -9,7 +9,7 @@ const roleMenus = {
     ],
   },
   PROCUREMENT_STAFF: {
-    sections: [{ label: 'Workspace', items: [['overview', 'Overview', 'trending-up'], ['forecasting', 'Forecasting', 'clipboard-list'], ['suppliers', 'Purchase orders', 'truck'], ['catalog', 'Inventory', 'box']] }],
+    sections: [{ label: 'Workspace', items: [['overview', 'Overview', 'trending-up'], ['forecasting', 'Forecasting', 'clipboard-list'], ['suppliers', 'Purchase orders', 'truck'], ['supplier-ratings', 'Supplier ratings', 'check-circle'], ['catalog', 'Inventory', 'box']] }],
   },
   WAREHOUSE_STAFF: {
     sections: [{ label: 'Warehouse', items: [['receiving', 'Receiving', 'truck'], ['cycle-count', 'Cycle counts', 'clipboard-list'], ['adjustments', 'Adjustments', 'box'], ['fulfillment', 'Fulfillment', 'shopping-cart']] }],
@@ -28,7 +28,7 @@ const roleMenus = {
 export const AppSidebar = ({ role, platformAdmin = false, activeItem, onNavigate, collapsed, onToggle }) => {
   const menu = roleMenus[role] || roleMenus.MANAGER;
   const sections = platformAdmin && role === 'ADMIN'
-    ? [{ label: 'Platform', items: [['companies', 'Companies', 'box']] }, ...menu.sections]
+    ? [{ label: 'Platform', items: [['companies', 'Companies', 'layers']] }, ...menu.sections]
     : menu.sections;
 
   return (
@@ -62,4 +62,3 @@ export const AppSidebar = ({ role, platformAdmin = false, activeItem, onNavigate
     </aside>
   );
 };
-
