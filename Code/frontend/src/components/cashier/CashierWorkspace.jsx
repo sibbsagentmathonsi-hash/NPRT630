@@ -1,5 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { apiFetch as fetch } from '../../utils/apiClient';
+import JsBarcode from 'jsbarcode';
 import { Icon } from '../common/Icons';
+import { formatCompanyDate, formatCompanyDateTime, formatCurrency } from '../../utils/companyFormatting';
 
 const returnReasons = [
   { label: 'Damaged Product', icon: 'alert-triangle' },
@@ -10,15 +13,45 @@ const returnReasons = [
   { label: 'Packaging Compromised', icon: 'box' },
 ];
 
+const ReceiptBarcode = ({ receiptNumber }) => {
+  const barcodeRef = useRef(null);
+
+  useEffect(() => {
+    if (!barcodeRef.current || !receiptNumber) return;
+    JsBarcode(barcodeRef.current, receiptNumber, {
+      format: 'CODE128',
+      displayValue: true,
+      font: 'DM Mono',
+      fontSize: 12,
+      height: 48,
+      margin: 4,
+      width: 1.7,
+    });
+  }, [receiptNumber]);
+
+  return <svg ref={barcodeRef} role="img" aria-label={`Scannable barcode for receipt ${receiptNumber}`} />;
+};
+
 export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'pos' }) => {
   const [activeTab, setActiveTab] = useState('pos'); // 'pos' | 'returns' | 'receipts'
   useEffect(() => setActiveTab(['pos', 'returns', 'receipts'].includes(initialTab) ? initialTab : 'pos'), [initialTab]);
   const products = workspace.products || [];
   const receipts = workspace.receipts || [];
+  const currency = workspace.companySettings?.currency || 'ZAR';
+  const timezone = workspace.companySettings?.timezone || 'Africa/Johannesburg';
+  const money = (amount) => formatCurrency(amount, currency);
 
   // POS State
   const [cart, setCart] = useState([]);
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [cameraDevices, setCameraDevices] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [cameraError, setCameraError] = useState('');
+  const [cameraStarting, setCameraStarting] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [scannerAttempt, setScannerAttempt] = useState(0);
+  const videoRef = useRef(null);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [discountPercent, setDiscountPercent] = useState(0);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
@@ -29,6 +62,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
 
   // Return Processing State (Design Iteration 2)
   const [returnReceiptNo, setReturnReceiptNo] = useState('');
+  const [scanningReceipt, setScanningReceipt] = useState(false);
   const [returnFoundReceipt, setReturnFoundReceipt] = useState(null);
   const [returnProductId, setReturnProductId] = useState('');
   const [returnQuantity, setReturnQuantity] = useState(1);
@@ -101,26 +135,96 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
     setCart(cart.map((i) => (i.productId === productId ? { ...i, quantity: newQty } : i)));
   };
 
-  const handleBarcodeScan = (e) => {
-    e.preventDefault();
-    if (!barcodeInput.trim()) return;
-
-    const clean = barcodeInput.trim().toUpperCase();
+  const handleBarcodeValue = (value) => {
+    if (!value.trim()) return false;
+    const clean = value.trim().toUpperCase();
     const product = products.find((p) => p.barcode === clean || p.sku.toUpperCase() === clean);
 
     if (product) {
       handleAddToCart(product);
       setBarcodeInput('');
       onNotify?.(`Scanned: ${product.name}`, 'success');
+      return true;
     } else {
-      onNotify?.(`No product found matching barcode "${barcodeInput}"`, 'error');
+      onNotify?.(`No product found matching barcode "${value}"`, 'error');
+      return false;
     }
   };
+
+  const handleBarcodeScan = (e) => {
+    e.preventDefault();
+    handleBarcodeValue(barcodeInput);
+  };
+
+  useEffect(() => {
+    if (!showBarcodeScanner) return undefined;
+
+    let cancelled = false;
+    let controls;
+    let reader;
+    setCameraStarting(true);
+    setCameraError('');
+    setCameraReady(false);
+
+    const startScanner = async () => {
+      try {
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error('Camera access requires a secure connection. Open SyncStock on the computer using localhost or HTTPS.');
+        }
+
+        const { BrowserCodeReader, BrowserMultiFormatReader } = await import('@zxing/browser');
+        if (cancelled) return;
+        reader = new BrowserMultiFormatReader();
+        controls = await reader.decodeFromVideoDevice(selectedCameraId || undefined, videoRef.current, (result) => {
+          if (!result || cancelled) return;
+          const barcode = result.getText();
+          setShowBarcodeScanner(false);
+          if (scanningReceipt) {
+            setReturnReceiptNo(barcode);
+            handleLookupReceiptValue(barcode);
+          } else {
+            handleBarcodeValue(barcode);
+          }
+        });
+        if (cancelled) {
+          controls.stop();
+          return;
+        }
+
+        setCameraStarting(false);
+        const video = videoRef.current;
+        if (video && video.paused) {
+          await video.play();
+        }
+        if (video && video.videoWidth > 0) setCameraReady(true);
+        const devices = await BrowserCodeReader.listVideoInputDevices();
+        if (cancelled) return;
+        setCameraDevices(devices);
+        if (!selectedCameraId && devices.length) {
+          const preferredCamera = devices.find((device) => /built.?in|integrated|webcam|laptop|computer/i.test(device.label))
+            || devices.find((device) => !/phone|iphone|android/i.test(device.label))
+            || devices[0];
+          setSelectedCameraId(preferredCamera.deviceId);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setCameraStarting(false);
+        setCameraError(error instanceof Error ? error.message : 'Unable to start the camera. Check browser permissions and try again.');
+      }
+    };
+
+    startScanner();
+
+    return () => {
+      cancelled = true;
+      controls?.stop();
+    };
+  }, [showBarcodeScanner, selectedCameraId, scannerAttempt, scanningReceipt]);
 
   const handleCompleteCheckout = async () => {
     if (cart.length === 0) return;
     if (paymentMethod === 'CASH' && !cashTenderSufficient) {
-      onNotify?.(`Cash received must be at least R ${cartTotal.toFixed(2)}`, 'error');
+      onNotify?.(`Cash received must be at least ${money(cartTotal)}`, 'error');
       return;
     }
     setProcessingSale(true);
@@ -160,9 +264,8 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   };
 
   // Lookup Receipt for Return (Step 1)
-  const handleLookupReceipt = (e) => {
-    e.preventDefault();
-    const clean = returnReceiptNo.trim().toUpperCase();
+  const handleLookupReceiptValue = (receiptNumber) => {
+    const clean = receiptNumber.trim().toUpperCase();
     const found = receipts.find((r) => r.receiptNumber.toUpperCase() === clean);
 
     if (found) {
@@ -172,9 +275,14 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
       }
       onNotify?.(`Found Receipt #${found.receiptNumber}`, 'success');
     } else {
-      onNotify?.(`Receipt "${returnReceiptNo}" not found. You can also select the product manually below.`, 'warning');
+      onNotify?.(`Receipt "${receiptNumber}" not found. You can also select the product manually below.`, 'warning');
       setReturnFoundReceipt(null);
     }
+  };
+
+  const handleLookupReceipt = (e) => {
+    e.preventDefault();
+    handleLookupReceiptValue(returnReceiptNo);
   };
 
   // Process Return (Step 2 & 3)
@@ -220,37 +328,16 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const filteredProducts = products.filter((p) => selectedCategory === 'ALL' || p.category === selectedCategory);
 
   return (
-    <div className="workspace-page cashier-page" style={{ padding: '1rem 1.5rem', maxWidth: '1600px', margin: '0 auto' }}>
-      {/* Top Header & Sub-Tabs */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div className="workspace-subnav" style={{ display: 'flex', gap: '6px', background: 'var(--bg-subtle)', padding: '4px', borderRadius: 'var(--radius-lg)' }}>
-            <button
-              className={`btn ${activeTab === 'pos' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-              onClick={() => setActiveTab('pos')}
-            >
-              <Icon name="shopping-cart" size={16} /> High-Speed POS Counter
-            </button>
-            <button
-              className={`btn ${activeTab === 'returns' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-              onClick={() => setActiveTab('returns')}
-            >
-              <Icon name="refresh-cw" size={16} /> Process Returns (2-Step Flow)
-            </button>
-            <button
-              className={`btn ${activeTab === 'receipts' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-              onClick={() => setActiveTab('receipts')}
-            >
-              <Icon name="printer" size={16} /> Receipt History ({receipts.length})
-            </button>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span className="badge badge-success">
-            <Icon name="user" size={14} /> Cashier: {currentUser?.name} ({currentUser?.employeeId})
-          </span>
-        </div>
+    <div className="workspace-page cashier-page">
+      <div className="cashier-page-heading">
+        <h1>{activeTab === 'pos' ? 'Checkout' : activeTab === 'returns' ? 'Process returns' : 'Receipt history'}</h1>
+        <p>
+          {activeTab === 'pos'
+            ? 'Scan products, review the basket, and complete the sale.'
+            : activeTab === 'returns'
+              ? 'Find the original receipt and record a customer return.'
+              : `${receipts.length} recent receipts`}
+        </p>
       </div>
 
       {/* VIEW 1: HIGH-SPEED POINT OF SALE */}
@@ -259,29 +346,28 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           {/* Product Catalogue & Barcode Scanner */}
           <div className="pos-catalog">
             {/* Barcode Search Form */}
-            <form onSubmit={handleBarcodeScan} style={{ display: 'flex', gap: '8px', marginBottom: '0.75rem' }}>
+            <form className="pos-scan-form" onSubmit={handleBarcodeScan}>
               <div style={{ flex: 1, position: 'relative' }}>
                 <input
                   type="text"
                   className="form-input form-input-mono"
-                  placeholder="Scan or enter item barcode (e.g. 6001001000011, ELEC-003)..."
+                  placeholder="Scan barcode or enter SKU..."
                   value={barcodeInput}
                   onChange={(e) => setBarcodeInput(e.target.value)}
                   autoFocus
                 />
               </div>
-              <button type="submit" className="btn btn-primary">
+              <button type="button" className="btn btn-primary" onClick={() => { setScanningReceipt(false); setShowBarcodeScanner(true); }}>
                 <Icon name="barcode" size={18} /> Scan / Add
               </button>
             </form>
 
             {/* Category Filter Tabs */}
-            <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '0.75rem' }}>
+            <div className="pos-category-filters">
               {categories.map((c) => (
                 <button
                   key={c}
                   className={`btn ${selectedCategory === c ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                  style={{ whiteSpace: 'nowrap' }}
                   onClick={() => setSelectedCategory(c)}
                 >
                   {c}
@@ -297,7 +383,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                   <div className="pos-item-title">{product.name}</div>
                   <div className="pos-item-sku">{product.sku}</div>
                   <div className="pos-item-price">
-                    <span>R {product.price.toFixed(2)}</span>
+                    <span>{money(product.price)}</span>
                     <span className={`badge ${product.availableStock <= product.reorderPoint ? 'badge-danger' : 'badge-gray'}`} style={{ fontSize: '0.6875rem' }}>
                       {product.availableStock} in stock
                     </span>
@@ -334,7 +420,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                     <div style={{ flex: 1, paddingRight: '8px' }}>
                       <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>{item.name}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        R {item.price.toFixed(2)} ea
+                        {money(item.price)} ea
                       </div>
                     </div>
 
@@ -350,7 +436,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                       </div>
 
                       <span style={{ fontWeight: 700, fontSize: '0.875rem', minWidth: '65px', textAlign: 'right' }}>
-                        R {(item.price * item.quantity).toFixed(2)}
+                        {money(item.price * item.quantity)}
                       </span>
 
                       <button
@@ -370,11 +456,11 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', background: 'var(--bg-subtle)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '4px' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Net Subtotal:</span>
-                <span>R {netSubtotal.toFixed(2)}</span>
+                <span>{money(netSubtotal)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '4px' }}>
                 <span style={{ color: 'var(--text-muted)' }}>VAT ({vatRate.toFixed(1)}% Incl):</span>
-                <span>R {vatAmount.toFixed(2)}</span>
+                <span>{money(vatAmount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8125rem', marginBottom: '8px' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Discount:</span>
@@ -393,7 +479,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
 
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '1rem', paddingTop: '4px', borderTop: '1px dashed var(--border-color)' }}>
                 <span>Total Due:</span>
-                <span style={{ color: 'var(--primary)' }}>R {cartTotal.toFixed(2)}</span>
+                <span style={{ color: 'var(--primary)' }}>{money(cartTotal)}</span>
               </div>
 
               <button
@@ -402,9 +488,50 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                 disabled={cart.length === 0}
                 onClick={() => setShowCheckoutModal(true)}
               >
-                <Icon name="dollar-sign" size={20} /> Pay R {cartTotal.toFixed(2)}
+                <Icon name="dollar-sign" size={20} /> Pay {money(cartTotal)}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showBarcodeScanner && (
+        <div className="modal-overlay" onClick={() => setShowBarcodeScanner(false)}>
+          <div className="modal-content pos-barcode-modal" role="dialog" aria-modal="true" aria-labelledby="pos-barcode-title" onClick={(event) => event.stopPropagation()}>
+            <div className="pos-barcode-modal-header">
+              <div>
+                <h2 id="pos-barcode-title">{scanningReceipt ? 'Scan receipt barcode' : 'Scan product barcode'}</h2>
+                <p>{scanningReceipt ? 'Point your computer camera at the receipt barcode.' : 'Point your computer camera at a product barcode.'} Hold the barcode steady in the preview.</p>
+              </div>
+              <button type="button" className="btn btn-secondary btn-sm" aria-label="Close scanner" onClick={() => setShowBarcodeScanner(false)}>✕</button>
+            </div>
+            {cameraDevices.length > 1 && (
+              <label className="form-label">
+                Camera
+                <select className="form-input" value={selectedCameraId} onChange={(event) => setSelectedCameraId(event.target.value)}>
+                  {cameraDevices.map((device, index) => (
+                    <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <video
+              ref={videoRef}
+              className="pos-barcode-preview"
+              autoPlay
+              muted
+              playsInline
+              onLoadedMetadata={() => setCameraReady(true)}
+            />
+            {cameraStarting && <p className="pos-barcode-status">Starting camera… Allow camera access if your browser asks.</p>}
+            {cameraReady && !cameraError && <p className="pos-barcode-status">Camera ready. Hold the barcode in view to scan.</p>}
+            {cameraError && (
+              <div className="pos-barcode-error" role="alert">
+                <span>{cameraError}</span>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setScannerAttempt((attempt) => attempt + 1)}>Try again</button>
+              </div>
+            )}
+            {cameraDevices.length > 1 && <p className="pos-barcode-status">If the preview is blank, choose your computer webcam from the camera list.</p>}
           </div>
         </div>
       )}
@@ -430,10 +557,13 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
               <input
                 type="text"
                 className="form-input form-input-mono"
-                placeholder="Step 1: Scan or enter receipt barcode (e.g. REC-2026-1001, INV-2024-00123)..."
+                placeholder="Step 1: Scan or enter the receipt number..."
                 value={returnReceiptNo}
                 onChange={(e) => setReturnReceiptNo(e.target.value)}
               />
+              <button type="button" className="btn btn-secondary" onClick={() => { setScanningReceipt(true); setShowBarcodeScanner(true); }}>
+                <Icon name="barcode" size={16} /> Scan receipt
+              </button>
               <button type="submit" className="btn btn-primary">
                 <Icon name="search" size={16} /> Find Invoice
               </button>
@@ -443,7 +573,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             {returnFoundReceipt && (
               <div style={{ background: 'var(--bg-subtle)', padding: '1rem', borderRadius: 'var(--radius-md)', marginBottom: '1.25rem' }}>
                 <div style={{ fontSize: '0.875rem', fontWeight: 700, marginBottom: '6px' }}>
-                  Original Transaction #{returnFoundReceipt.receiptNumber} (Date: {new Date(returnFoundReceipt.createdAt).toLocaleDateString()})
+                  Original Transaction #{returnFoundReceipt.receiptNumber} (Date: {formatCompanyDate(returnFoundReceipt.createdAt, timezone)})
                 </div>
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                   {returnFoundReceipt.items.map((line) => (
@@ -453,7 +583,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                       className={`btn btn-sm ${returnProductId === line.productId ? 'btn-primary' : 'btn-secondary'}`}
                       onClick={() => setReturnProductId(line.productId)}
                     >
-                      {line.name} (R {line.unitPrice.toFixed(2)})
+                      {line.name} ({money(line.unitPrice)})
                     </button>
                   ))}
                 </div>
@@ -474,7 +604,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                     <option value="">-- Select item to return --</option>
                     {products.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} ({p.sku}) - Price: R {p.price.toFixed(2)}
+                        {p.name} ({p.sku}) - Price: {money(p.price)}
                       </option>
                     ))}
                   </select>
@@ -543,7 +673,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                   <Icon name="check-circle" size={18} /> Return Successfully Processed
                 </div>
                 <p style={{ fontSize: '0.875rem' }}>
-                  Return Voucher <strong>{returnSuccessData.returnId}</strong> created. Customer refund: <strong>R {returnSuccessData.refundAmount.toFixed(2)}</strong>. Stock restored to <strong>{returnSuccessData.movement.warehouseId}</strong>.
+                  Return Voucher <strong>{returnSuccessData.returnId}</strong> created. Customer refund: <strong>{money(returnSuccessData.refundAmount)}</strong>. Stock restored to <strong>{returnSuccessData.movement.warehouseId}</strong>.
                 </p>
               </div>
             )}
@@ -574,11 +704,11 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                 {receipts.map((rec) => (
                   <tr key={rec.id}>
                     <td><span className="badge badge-primary form-input-mono">{rec.receiptNumber}</span></td>
-                    <td style={{ fontSize: '0.8125rem' }}>{new Date(rec.createdAt).toLocaleString()}</td>
+                    <td style={{ fontSize: '0.8125rem' }}>{formatCompanyDateTime(rec.createdAt, timezone)}</td>
                     <td>{rec.cashierName} ({rec.cashierEmployeeId})</td>
                     <td><span className="badge badge-gray">{rec.paymentMethod}</span></td>
                     <td>{rec.items.length} line items</td>
-                    <td><strong>R {rec.total.toFixed(2)}</strong></td>
+                    <td><strong>{money(rec.total)}</strong></td>
                     <td style={{ textAlign: 'right' }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => setActiveReceipt(rec)}>
                         <Icon name="printer" size={14} /> View / Print
@@ -630,12 +760,12 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
 
             <div style={{ background: 'var(--bg-subtle)', padding: '1rem', borderRadius: 'var(--radius-md)', marginBottom: '1rem', textAlign: 'center' }}>
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Total Amount to Pay</span>
-              <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--primary)' }}>R {cartTotal.toFixed(2)}</div>
+              <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--primary)' }}>{money(cartTotal)}</div>
             </div>
 
             {paymentMethod === 'CASH' && (
               <div>
-                <label className="form-label">Tendered Cash Amount (ZAR)</label>
+                <label className="form-label">Tendered Cash Amount ({currency})</label>
                 <input
                   type="number"
                   className="form-input"
@@ -648,7 +778,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                 />
                 {!cashTenderSufficient && (
                   <div style={{ color: 'var(--danger)', fontSize: '0.8125rem', marginTop: '6px' }}>
-                    Cash received must be at least R {cartTotal.toFixed(2)}.
+                    Cash received must be at least {money(cartTotal)}.
                   </div>
                 )}
 
@@ -662,14 +792,14 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                       style={{ flex: 1 }}
                       onClick={() => setTenderAmount(String(preset))}
                     >
-                      R {preset}
+                      {money(preset)}
                     </button>
                   ))}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--success-light)', borderRadius: 'var(--radius-md)', marginBottom: '1rem' }}>
                   <span style={{ fontWeight: 600, color: 'var(--success-text)' }}>Change Due:</span>
-                  <strong style={{ fontSize: '1.125rem', color: 'var(--success-text)' }}>R {changeDue.toFixed(2)}</strong>
+                  <strong style={{ fontSize: '1.125rem', color: 'var(--success-text)' }}>{money(changeDue)}</strong>
                 </div>
               </div>
             )}
@@ -701,7 +831,7 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                 <div>Johannesburg Central (JHB-01)</div>
                 <div>VAT Reg: 4890123456</div>
                 <div style={{ marginTop: '4px', fontSize: '0.75rem' }}>Receipt: #{activeReceipt.receiptNumber}</div>
-                <div style={{ fontSize: '0.75rem' }}>Date: {new Date(activeReceipt.createdAt).toLocaleString()}</div>
+                <div style={{ fontSize: '0.75rem' }}>Date: {formatCompanyDateTime(activeReceipt.createdAt, timezone)}</div>
                 <div style={{ fontSize: '0.75rem' }}>Cashier: {activeReceipt.cashierName} ({activeReceipt.cashierEmployeeId})</div>
               </div>
 
@@ -710,9 +840,9 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
                     <div>
                       <div>{line.name}</div>
-                      <div style={{ fontSize: '0.7rem', color: '#666' }}>{line.quantity} x R {line.unitPrice.toFixed(2)}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#666' }}>{line.quantity} x {money(line.unitPrice)}</div>
                     </div>
-                    <div>R {line.lineTotal.toFixed(2)}</div>
+                    <div>{money(line.lineTotal)}</div>
                   </div>
                 ))}
               </div>
@@ -720,37 +850,39 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
               <div style={{ borderTop: '1px dashed #ccc', paddingTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span>Net Subtotal:</span>
-                  <span>R {activeReceipt.subtotal.toFixed(2)}</span>
+                  <span>{money(activeReceipt.subtotal)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span>VAT (15%):</span>
-                  <span>R {activeReceipt.vatAmount.toFixed(2)}</span>
+                  <span>{money(activeReceipt.vatAmount)}</span>
                 </div>
                 {activeReceipt.discountAmount > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c00' }}>
                     <span>Discount:</span>
-                    <span>-R {activeReceipt.discountAmount.toFixed(2)}</span>
+                    <span>-{money(activeReceipt.discountAmount)}</span>
                   </div>
                 )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '1rem', marginTop: '4px', borderTop: '1px solid #000', paddingTop: '4px' }}>
                   <span>TOTAL:</span>
-                  <span>R {activeReceipt.total.toFixed(2)}</span>
+                  <span>{money(activeReceipt.total)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginTop: '4px' }}>
                   <span>Paid via {activeReceipt.paymentMethod}:</span>
-                  <span>R {activeReceipt.tenderAmount?.toFixed(2) || activeReceipt.total.toFixed(2)}</span>
+                  <span>{money(activeReceipt.tenderAmount ?? activeReceipt.total)}</span>
                 </div>
                 {activeReceipt.changeAmount > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
                     <span>Change:</span>
-                    <span>R {activeReceipt.changeAmount.toFixed(2)}</span>
+                    <span>{money(activeReceipt.changeAmount)}</span>
                   </div>
                 )}
               </div>
 
               <div style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.75rem' }}>
                 <div>Thank you for shopping with us!</div>
-                <div style={{ letterSpacing: '4px', marginTop: '8px', fontSize: '1.125rem' }}>||| | |||| ||| ||||</div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: '8px' }}>
+                  <ReceiptBarcode receiptNumber={activeReceipt.receiptNumber} />
+                </div>
               </div>
             </div>
 
@@ -768,4 +900,3 @@ export const CashierWorkspace = ({ workspace, apiBase, token, currentUser, onRef
     </div>
   );
 };
-

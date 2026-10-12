@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { apiFetch as fetch } from '../../utils/apiClient';
 import { Icon } from '../common/Icons';
+import { formatCurrency } from '../../utils/companyFormatting';
 
 export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'receiving' }) => {
   const [activeTab, setActiveTab] = useState('receiving'); // 'receiving' | 'cycle-count' | 'adjustments' | 'fulfillment'
@@ -7,6 +9,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
   const [isMobileSimMode, setIsMobileSimMode] = useState(false);
 
   const products = workspace.products || [];
+  const money = (amount) => formatCurrency(amount, workspace.companySettings?.currency || 'ZAR');
   const purchaseOrders = workspace.purchaseOrders || [];
   const cycleCounts = workspace.cycleCounts || [];
   const orders = workspace.orders || [];
@@ -576,7 +579,7 @@ export const WarehouseWorkspace = ({ workspace, apiBase, token, currentUser, onR
                         ))}
                       </div>
                     </td>
-                    <td><strong>R {o.total.toFixed(2)}</strong></td>
+                    <td><strong>{money(o.total)}</strong></td>
                     <td style={{ textAlign: 'right' }}>
                       {o.status === 'RESERVED' || o.status === 'PENDING' ? (
                         <button className="btn btn-primary btn-sm" onClick={() => handleFulfillOrder(o.id)}>

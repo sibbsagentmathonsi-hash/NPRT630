@@ -44,6 +44,37 @@ test('authenticateUser rejects incorrect password and nonexistent user', () => {
   assert.equal(wrongUser, undefined);
 });
 
+test('email login and first-password setup select the correct account when employee IDs collide', () => {
+  const existingUser = users.find((user) => user.employeeId === 'ADM-001');
+  assert.ok(existingUser);
+  const email = `employee-id-collision-${Date.now()}@test.local`;
+  const initialPassword = 'InitialPass123!';
+  const registered = registerEmployee({
+    name: 'Collision Test Account',
+    email,
+    role: 'MANAGER',
+    sector: 'Store Management',
+    tempPassword: initialPassword,
+  });
+  const target = users.find((user) => user.email === email);
+  assert.ok(target);
+
+  try {
+    target.employeeId = existingUser.employeeId;
+
+    assert.equal(authenticateUser(email, initialPassword)?.id, target.id);
+    assert.equal(authenticateUser(existingUser.employeeId, initialPassword), undefined);
+
+    const update = setFirstPassword(email, 'NewSecurePass2026!', target.companyId);
+    assert.equal(update.success, true);
+    assert.equal(update.user?.id, target.id);
+    assert.equal(authenticateUser(email, 'NewSecurePass2026!', target.companyId)?.id, target.id);
+    assert.equal(authenticateUser(existingUser.email, testAdminPassword)?.id, existingUser.id);
+  } finally {
+    users.splice(users.findIndex((user) => user.id === registered.user.id), 1);
+  }
+});
+
 test('generateToken returns a usable signed token for a user', () => {
   const admin = authenticateUser('ADM-001', testAdminPassword);
   assert.ok(admin);
@@ -193,6 +224,42 @@ test('sendEmailVerificationCode and verifyEmailCode workflow', () => {
   const verifyRes = verifyEmailCode('ADM-001', sendRes.code);
   assert.equal(verifyRes.success, true);
   assert.equal(verifyRes.user?.emailVerified, true);
+});
+
+test('email verification codes stay isolated between companies sharing an email address', () => {
+  const email = `shared-company-email-${Date.now()}@test.local`;
+  const companyA = `company-a-${Date.now()}`;
+  const companyB = `company-b-${Date.now()}`;
+  const accountA = registerEmployee({
+    name: 'Company A Employee',
+    email,
+    role: 'CASHIER',
+    sector: 'Cashier & Front-of-House',
+    companyId: companyA,
+  });
+  const accountB = registerEmployee({
+    name: 'Company B Employee',
+    email,
+    role: 'CASHIER',
+    sector: 'Cashier & Front-of-House',
+    companyId: companyB,
+  });
+
+  try {
+    const codeA = sendEmailVerificationCode(email, companyA);
+    const codeB = sendEmailVerificationCode(email, companyB);
+    assert.equal(codeA.success, true);
+    assert.equal(codeB.success, true);
+    assert.ok(codeA.code);
+    assert.ok(codeB.code);
+    assert.equal(verifyEmailCode(email, codeA.code, companyB).success, false);
+    assert.equal(verifyEmailCode(email, codeA.code, companyA).user?.id, accountA.user.id);
+    assert.equal(verifyEmailCode(email, codeB.code, companyB).user?.id, accountB.user.id);
+  } finally {
+    for (const id of [accountA.user.id, accountB.user.id]) {
+      users.splice(users.findIndex((user) => user.id === id), 1);
+    }
+  }
 });
 
 test('enrollMfa and verifyMfa validate authentic TOTP codes', () => {

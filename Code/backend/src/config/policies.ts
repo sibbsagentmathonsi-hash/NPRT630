@@ -72,13 +72,27 @@ export const hydratePolicies = (records: Array<{ companyId: string; configuratio
   for (const record of records) policyByCompany.set(record.companyId, record.configuration);
 };
 
-export const updateSystemPolicy = (changes: Partial<SystemPolicy>, changedBy: string): SystemPolicy => {
-  const policy = getCurrentPolicy();
+export const updateSystemPolicy = (
+  changes: Partial<SystemPolicy>,
+  changedBy: string,
+  companyId = currentCompanyId(),
+): SystemPolicy => {
+  const policy = getCurrentPolicy(companyId);
   const nextVersion = `1.${Number(policy.version.split('.')[1] || 0) + 1}`;
-  if (changes.password) {
-    policy.password = { ...policy.password, ...changes.password };
-  }
-  Object.assign(policy, { ...changes, password: policy.password }, {
+  const nextPolicy: SystemPolicy = {
+    ...policy,
+    ...changes,
+    password: { ...policy.password, ...changes.password },
+    controls: changes.controls
+      ? policy.controls.map((control) => ({
+        ...control,
+        status: changes.controls?.find((candidate) => candidate.id === control.id)?.status ?? control.status,
+      }))
+      : policy.controls,
+  };
+  nextPolicy.password.firstLoginChangeRequired = nextPolicy.controls
+    .some((control) => control.id === 'first-login-password' && control.status === 'ENFORCED');
+  Object.assign(nextPolicy, {
     version: nextVersion,
     effectiveDate: new Date().toISOString().slice(0, 10),
     history: [
@@ -86,9 +100,12 @@ export const updateSystemPolicy = (changes: Partial<SystemPolicy>, changedBy: st
       ...policy.history,
     ],
   });
-  return policy;
+  return nextPolicy;
+};
+
+export const setCurrentPolicy = (companyId: string, policy: SystemPolicy): void => {
+  policyByCompany.set(companyId, policy);
 };
 
 export const isPolicyEnforced = (controlId: string, companyId?: string): boolean =>
   getCurrentPolicy(companyId).controls.some((control) => control.id === controlId && control.status === 'ENFORCED');
-

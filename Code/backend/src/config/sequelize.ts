@@ -1,5 +1,6 @@
 import { Sequelize } from 'sequelize';
 import { loadEnvironment } from './environment';
+import { getDatabaseSslOptions } from './databaseSecurity';
 import { currentCompanyId } from './tenancy';
 
 loadEnvironment();
@@ -18,7 +19,7 @@ export const sequelize = new Sequelize(dbName, dbUser, dbPassword, {
   port: dbPort,
   dialect: 'postgres',
   logging: false,
-  dialectOptions: { ssl: false },
+  dialectOptions: { ssl: getDatabaseSslOptions() },
   pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
 });
 

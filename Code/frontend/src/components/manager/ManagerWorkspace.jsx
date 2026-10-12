@@ -1,13 +1,21 @@
 import React, { useEffect, useState } from 'react';
+import { apiFetch as fetch } from '../../utils/apiClient';
+import { formatCompanyDate, formatCompanyDateTime, formatCurrency } from '../../utils/companyFormatting';
 
 export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRefresh, onNotify, initialTab = 'overview' }) => {
   const [activeSubTab, setActiveSubTab] = useState('overview');
+  const isProcurementStaff = currentUser?.role === 'PROCUREMENT_STAFF';
   useEffect(() => {
-    setActiveSubTab(['overview', 'forecasting', 'suppliers', 'supplier-ratings', 'catalog'].includes(initialTab) ? initialTab : 'overview');
-  }, [initialTab]);
+    const availableTabs = isProcurementStaff
+      ? ['forecasting', 'suppliers', 'supplier-ratings']
+      : ['overview', 'forecasting', 'suppliers', 'catalog'];
+    const defaultTab = isProcurementStaff ? 'forecasting' : 'overview';
+    setActiveSubTab(availableTabs.includes(initialTab) ? initialTab : defaultTab);
+  }, [initialTab, isProcurementStaff]);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [catalogSearch, setCatalogSearch] = useState('');
   const [generatingPo, setGeneratingPo] = useState(false);
+  const [creatingForecastPoSku, setCreatingForecastPoSku] = useState(null);
   const [receivingPoId, setReceivingPoId] = useState(null);
   const [submittingReceipt, setSubmittingReceipt] = useState(false);
   const [receiptForm, setReceiptForm] = useState({
@@ -20,6 +28,11 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const [reviewingPoId, setReviewingPoId] = useState(null);
   const [viewingReviewPoId, setViewingReviewPoId] = useState(null);
   const [submittingReview, setSubmittingReview] = useState(false);
+  const [showSupplierForm, setShowSupplierForm] = useState(false);
+  const [submittingSupplier, setSubmittingSupplier] = useState(false);
+  const [updatingSupplierId, setUpdatingSupplierId] = useState(null);
+  const [supplierForm, setSupplierForm] = useState({ name: '', contact: '', leadTimeDays: '' });
+  const [selectedSupplierProductIds, setSelectedSupplierProductIds] = useState([]);
   const [supplierReviewForm, setSupplierReviewForm] = useState({
     deliveryScore: '',
     qualityScore: '',
@@ -29,7 +42,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const [productFormOpen, setProductFormOpen] = useState(false);
   const [editingProductId, setEditingProductId] = useState(null);
   const [productForm, setProductForm] = useState({
-    sku: '', barcode: '', name: '', category: 'General', supplierId: 1, stock: 0,
+    sku: '', barcode: '', name: '', category: 'General', supplierId: '', stock: 0,
     reorderPoint: 0, reorderQuantity: 1, unitCost: 0, price: 0,
     warehouse: 'Johannesburg Central (JHB-01)', warehouseId: 'JHB-01', binLocation: 'A-01', imageUrl: '',
   });
@@ -47,16 +60,26 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   };
 
   const products = workspace.products || [];
+  const currency = workspace.companySettings?.currency || 'ZAR';
+  const timezone = workspace.companySettings?.timezone || 'Africa/Johannesburg';
+  const money = (amount) => formatCurrency(amount, currency);
   const forecasts = workspace.forecasts || [];
   const suppliers = workspace.suppliers || [];
+  const ratedSuppliers = suppliers.filter((supplier) => supplier.reviewCount > 0);
   const purchaseOrders = workspace.purchaseOrders || [];
+  const recommendedForecasts = forecasts.filter((forecast) => !purchaseOrders.some((order) =>
+    order.sku?.toUpperCase() === forecast.sku.toUpperCase() &&
+    !['RECEIVED', 'CANCELLED'].includes(order.status) &&
+    order.remainingQuantity > 0
+  ));
   const warehouses = workspace.warehouses || [];
   const canReceivePurchaseOrders = currentUser?.role === 'MANAGER';
+  const canManagePurchaseOrders = isProcurementStaff;
   const canSubmitSupplierReviews = currentUser?.role === 'PROCUREMENT_STAFF';
   const workspaceTitle = activeSubTab === 'supplier-ratings'
     ? 'Supplier Ratings'
     : activeSubTab === 'suppliers'
-      ? 'Purchase Order Management'
+      ? isProcurementStaff ? 'Purchase Order Management' : 'Purchase Order Oversight'
       : 'Store Operations & Demand Analytics';
 
   const handleSubmitSupplierReview = async (event) => {
@@ -89,6 +112,87 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
       onNotify?.(err.message, 'error');
     } finally {
       setSubmittingReview(false);
+    }
+  };
+
+  const handleAddSupplier = async (event) => {
+    event.preventDefault();
+    setSubmittingSupplier(true);
+    try {
+      const res = await fetch(`${apiBase}/api/suppliers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ['Bearer', token].join(' '),
+        },
+        body: JSON.stringify({
+          ...supplierForm,
+          leadTimeDays: Number(supplierForm.leadTimeDays),
+          productIds: selectedSupplierProductIds.map(Number),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to add supplier');
+
+      setSupplierForm({ name: '', contact: '', leadTimeDays: '' });
+      setSelectedSupplierProductIds([]);
+      setShowSupplierForm(false);
+      await onRefresh?.();
+      onNotify?.(`Supplier ${data.supplier.name} added and assigned to ${data.assignedProductIds?.length || 0} products`, 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setSubmittingSupplier(false);
+    }
+  };
+
+  const handleSupplierArchive = async (supplier, isArchived) => {
+    setUpdatingSupplierId(supplier.id);
+    try {
+      const res = await fetch(`${apiBase}/api/suppliers/${supplier.id}/archive`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ['Bearer', token].join(' '),
+        },
+        body: JSON.stringify({ isArchived }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to update supplier');
+
+      await onRefresh?.();
+      onNotify?.(data.message, 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setUpdatingSupplierId(null);
+    }
+  };
+
+  const handleSupplierDelete = async (supplier) => {
+    const productCount = products.filter((product) => product.supplierId === supplier.id).length;
+    const purchaseOrderCount = purchaseOrders.filter((order) => order.supplierId === supplier.id).length;
+    if (productCount || purchaseOrderCount) {
+      onNotify?.(`Reassign ${productCount} product${productCount === 1 ? '' : 's'} and ${purchaseOrderCount} purchase order${purchaseOrderCount === 1 ? '' : 's'} before deleting this supplier.`, 'error');
+      return;
+    }
+    if (!window.confirm(`Permanently delete supplier "${supplier.name}"? This cannot be undone.`)) return;
+
+    setUpdatingSupplierId(supplier.id);
+    try {
+      const res = await fetch(`${apiBase}/api/suppliers/${supplier.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: ['Bearer', token].join(' ') },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to delete supplier');
+
+      await onRefresh?.();
+      onNotify?.(data.message, 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setUpdatingSupplierId(null);
     }
   };
 
@@ -173,9 +277,19 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   };
 
   const handleCreatePoFromForecast = async (item) => {
+    if (creatingForecastPoSku) return;
+
+    const product = products.find((entry) => entry.sku === item.sku);
+    const supplier = suppliers.find((entry) => entry.id === product?.supplierId);
+    if (!supplier) {
+      onNotify?.('Assign a registered supplier to this product before creating its purchase order.', 'error');
+      return;
+    }
+
+    setCreatingForecastPoSku(item.sku);
+    let createdPurchaseOrder = null;
     try {
-      const supplier = suppliers[0] || { id: 1 };
-      const res = await fetch(`${apiBase}/api/purchase-orders`, {
+      const createResponse = await fetch(`${apiBase}/api/purchase-orders`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -190,13 +304,32 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
         }),
       });
 
-      const data = await res.json();
-      if (res.ok) {
-        onNotify?.(`Created replenishment PO for ${item.productName} (Qty: ${item.recommendedOrderQty})`, 'success');
-        onRefresh();
+      const createData = await createResponse.json();
+      if (!createResponse.ok) {
+        throw new Error(createData.error || 'Unable to create replenishment purchase order');
       }
+      createdPurchaseOrder = createData.purchaseOrder;
+
+      const approveResponse = await fetch(`${apiBase}/api/purchase-orders/${createdPurchaseOrder.id}/approve`, {
+        method: 'PATCH',
+        headers: { Authorization: ['Bearer', token].join(' ') },
+      });
+      const approveData = await approveResponse.json();
+      if (!approveResponse.ok) {
+        throw new Error(approveData.error || `PO-${createdPurchaseOrder.id} was created but could not be approved`);
+      }
+
+      await onRefresh?.();
+      setActiveSubTab('suppliers');
+      onNotify?.(`PO-${createdPurchaseOrder.id} approved for ${item.productName} (Qty: ${item.recommendedOrderQty})`, 'success');
     } catch (err) {
+      if (createdPurchaseOrder) {
+        await onRefresh?.();
+        setActiveSubTab('suppliers');
+      }
       onNotify?.(err.message, 'error');
+    } finally {
+      setCreatingForecastPoSku(null);
     }
   };
 
@@ -231,7 +364,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
   const openProductForm = (product = null) => {
     setEditingProductId(product?.id || null);
     setProductForm(product ? { ...product } : {
-      sku: '', barcode: '', name: '', category: 'General', supplierId: suppliers[0]?.id || 1, stock: 0,
+      sku: '', barcode: '', name: '', category: 'General', supplierId: '', stock: 0,
       reorderPoint: 0, reorderQuantity: 1, unitCost: 0, price: 0,
       warehouse: 'Johannesburg Central (JHB-01)', warehouseId: 'JHB-01', binLocation: 'A-01', imageUrl: '',
     });
@@ -265,7 +398,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span className="badge badge-primary">
-              {activeSubTab === 'supplier-ratings' ? 'Supplier Performance' : activeSubTab === 'suppliers' ? 'Procurement Workspace' : 'Store Manager Command Center'}
+              {activeSubTab === 'supplier-ratings' ? 'Supplier Performance' : activeSubTab === 'suppliers' ? (isProcurementStaff ? 'Procurement Workspace' : 'Manager Purchase Order Oversight') : isProcurementStaff ? 'Procurement Workspace' : 'Store Manager Command Center'}
             </span>
             <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
               {activeSubTab === 'supplier-ratings' ? 'Review history and ratings' : activeSubTab === 'suppliers' ? 'Order lifecycle and receiving' : 'Real-time business intelligence'}
@@ -280,7 +413,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           <button className="btn btn-secondary" onClick={onRefresh}>
             Refresh
           </button>
-          {activeSubTab !== 'supplier-ratings' && (
+          {canManagePurchaseOrders && activeSubTab !== 'supplier-ratings' && (
             <button className="btn btn-primary" onClick={handleGenerateLowStockPos} disabled={generatingPo}>
               {generatingPo ? 'Evaluating Stock...' : 'Auto-Generate Low Stock POs'}
             </button>
@@ -290,9 +423,11 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
 
       {/* Sub-Navigation Tabs */}
       <div className="workspace-subnav" style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', marginBottom: '1.5rem', paddingBottom: '0.5rem' }}>
-        <button className={`btn ${activeSubTab === 'overview' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('overview')}>
-          Executive KPI Dashboard
-        </button>
+        {!isProcurementStaff && (
+          <button className={`btn ${activeSubTab === 'overview' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('overview')}>
+            Executive KPI Dashboard
+          </button>
+        )}
         <button className={`btn ${activeSubTab === 'forecasting' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('forecasting')}>
           AI Demand Forecasting & EOQ Report
         </button>
@@ -304,9 +439,11 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             Supplier Ratings
           </button>
         )}
-        <button className={`btn ${activeSubTab === 'catalog' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('catalog')}>
-          Master Product Inventory ({products.length})
-        </button>
+        {!isProcurementStaff && (
+          <button className={`btn ${activeSubTab === 'catalog' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveSubTab('catalog')}>
+            Master Product Inventory ({products.length})
+          </button>
+        )}
       </div>
 
       {/* TAB 1: EXECUTIVE KPI DASHBOARD */}
@@ -316,9 +453,9 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           <div className="grid-cols-4" style={{ marginBottom: '1.5rem' }}>
             <div className="kpi-card">
               <div className="kpi-header">
-                <span className="kpi-title">Total Daily Revenue (ZAR)</span>
+                <span className="kpi-title">Total Daily Revenue ({currency})</span>
               </div>
-              <div className="kpi-value">R {summary.dailySales?.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</div>
+              <div className="kpi-value">{money(summary.dailySales)}</div>
               <div className="kpi-subtext" style={{ color: 'var(--success-text)' }}>
                 ↑ +12.5% vs previous month
               </div>
@@ -348,9 +485,9 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
               <div className="kpi-header">
                 <span className="kpi-title">Inventory Valuation (Retail)</span>
               </div>
-              <div className="kpi-value">R {summary.inventoryRetailValue?.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</div>
+              <div className="kpi-value">{money(summary.inventoryRetailValue)}</div>
               <div className="kpi-subtext">
-                Cost: R {summary.inventoryCostValue?.toLocaleString('en-ZA', { minimumFractionDigits: 2 })} ({summary.grossMarginPct}% Margin)
+                Cost: {money(summary.inventoryCostValue)} ({summary.grossMarginPct}% Margin)
               </div>
             </div>
           </div>
@@ -360,7 +497,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             {/* Sales Trend Chart (Figure from documentation) */}
             <div className="card">
               <div className="card-header analytics-card-header">
-                <h3 className="card-title">Sales Overview (ZAR) & Machine Learning Projection</h3>
+                <h3 className="card-title">Sales Overview ({currency}) & Machine Learning Projection</h3>
                 <span className="badge badge-primary">Daily Time Series</span>
               </div>
               <div style={{ padding: '1rem 0' }}>
@@ -433,7 +570,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                     <th>SKU & Product Name</th>
                     <th>Category</th>
                     <th>Current Stock</th>
-                    <th>Unit Price (ZAR)</th>
+                    <th>Unit Price ({currency})</th>
                     <th>Total Velocity</th>
                     <th>Status</th>
                   </tr>
@@ -452,7 +589,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                       </td>
                       <td><span className="badge badge-gray">{p.category}</span></td>
                       <td><strong>{p.stock} units</strong> ({p.binLocation})</td>
-                      <td>R {p.price.toFixed(2)}</td>
+                      <td>{money(p.price)}</td>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <div style={{ width: '80px', height: '6px', background: 'var(--bg-subtle)', borderRadius: '3px', overflow: 'hidden' }}>
@@ -516,11 +653,11 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                     <th>Current Stock</th>
                     <th>Suggested Order (EOQ)</th>
                     <th>Stockout Risk</th>
-                    <th style={{ textAlign: 'right' }}>1-Click Replenish</th>
+                    {canManagePurchaseOrders && <th style={{ textAlign: 'right' }}>1-Click Replenish</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {forecasts.map((f) => (
+                  {recommendedForecasts.map((f) => (
                     <tr key={f.sku}>
                       <td>
                         <div style={{ fontWeight: 600 }}>{f.productName}</div>
@@ -545,16 +682,25 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                           {f.stockoutRisk} Risk
                         </span>
                       </td>
-                      <td style={{ textAlign: 'right' }}>
+                      {canManagePurchaseOrders && <td style={{ textAlign: 'right' }}>
                         <button
                           className="btn btn-primary btn-sm"
+                          disabled={Boolean(creatingForecastPoSku)}
+                          aria-busy={creatingForecastPoSku === f.sku}
                           onClick={() => handleCreatePoFromForecast(f)}
                         >
-                          Approve & Create PO
+                          {creatingForecastPoSku === f.sku ? 'Creating...' : 'Approve & Create PO'}
                         </button>
-                      </td>
+                      </td>}
                     </tr>
                   ))}
+                  {recommendedForecasts.length === 0 && (
+                    <tr>
+                      <td colSpan={canManagePurchaseOrders ? 9 : 8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                        All forecasted products already have an open purchase order.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -565,12 +711,189 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
       {/* TAB 3: PURCHASE ORDERS */}
       {activeSubTab === 'suppliers' && (
         <div>
+          {canManagePurchaseOrders && (
+            <div className="card" style={{ marginBottom: '1.25rem' }}>
+              <div className="card-header">
+                <div>
+                  <h3 className="card-title">Suppliers</h3>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', marginTop: '4px' }}>
+                    Only suppliers entered for this company are listed here.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    setSupplierForm({ name: '', contact: '', leadTimeDays: '' });
+                    setSelectedSupplierProductIds([]);
+                    setShowSupplierForm((visible) => !visible);
+                  }}
+                >
+                  {showSupplierForm ? 'Cancel' : 'Add Supplier'}
+                </button>
+              </div>
+
+              {showSupplierForm && (
+                <form onSubmit={handleAddSupplier} style={{ marginBottom: '1.25rem' }}>
+                  <div className="grid-cols-3">
+                    <label className="form-group">
+                      <span className="form-label">Supplier name</span>
+                      <input
+                        className="form-input"
+                        value={supplierForm.name}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, name: event.target.value }))}
+                        maxLength={150}
+                        required
+                      />
+                    </label>
+                    <label className="form-group">
+                      <span className="form-label">Contact details (email or phone)</span>
+                      <input
+                        className="form-input"
+                        value={supplierForm.contact}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, contact: event.target.value }))}
+                        maxLength={255}
+                        required
+                      />
+                    </label>
+                    <label className="form-group">
+                      <span className="form-label">Lead time (days)</span>
+                      <input
+                        className="form-input"
+                        type="number"
+                        min="1"
+                        max="365"
+                        step="1"
+                        value={supplierForm.leadTimeDays}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, leadTimeDays: event.target.value }))}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <fieldset className="form-group" style={{ border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1rem', marginBottom: '1rem' }}>
+                    <legend className="form-label" style={{ padding: '0 0.35rem' }}>Products this supplier supplies</legend>
+                    {products.length > 0 ? (
+                      <div className="grid-cols-2">
+                        {products.map((product) => {
+                          const currentSupplier = suppliers.find((entry) => entry.id === product.supplierId);
+                          const isSelected = selectedSupplierProductIds.includes(String(product.id));
+                          return (
+                            <label key={product.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', padding: '0.5rem', borderRadius: 'var(--radius-sm)', background: isSelected ? 'var(--primary-light)' : 'transparent' }}>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(event) => setSelectedSupplierProductIds((selected) =>
+                                  event.target.checked
+                                    ? [...selected, String(product.id)]
+                                    : selected.filter((id) => id !== String(product.id))
+                                )}
+                              />
+                              <span>
+                                <strong>{product.name}</strong>
+                                <span className="form-input-mono" style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                  {product.sku}{currentSupplier ? ` · Currently supplied by ${currentSupplier.name}` : ' · Unassigned supplier'}
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p style={{ color: 'var(--text-muted)' }}>There are no products to assign yet. You can assign products later from the product catalogue.</p>
+                    )}
+                  </fieldset>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={submittingSupplier}
+                      onClick={() => {
+                        setShowSupplierForm(false);
+                        setSupplierForm({ name: '', contact: '', leadTimeDays: '' });
+                        setSelectedSupplierProductIds([]);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn btn-primary" disabled={submittingSupplier}>
+                      {submittingSupplier ? 'Saving...' : 'Save Supplier'}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {suppliers.length > 0 ? (
+                <div className="grid-cols-3">
+                  {suppliers.map((supplier) => (
+                    <div className="card" key={supplier.id}>
+                      <span className={`badge ${supplier.isArchived ? 'badge-warning' : 'badge-primary'}`}>
+                        Supplier #{supplier.id}{supplier.isArchived ? ' · Archived' : ''}
+                      </span>
+                      <h4 style={{ marginTop: '8px' }}>{supplier.name}</h4>
+                      <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>{supplier.contact}</p>
+                      <p style={{ marginTop: '8px' }}>Lead time: {supplier.leadTimeDays} days</p>
+                      <div style={{ marginTop: '0.75rem' }}>
+                        <strong style={{ fontSize: '0.8125rem' }}>Supplies</strong>
+                        {products.filter((product) => product.supplierId === supplier.id).length > 0 ? (
+                          <ul style={{ paddingLeft: '1.25rem', marginTop: '0.35rem', fontSize: '0.8125rem' }}>
+                            {products.filter((product) => product.supplierId === supplier.id).map((product) => (
+                              <li key={product.id}>{product.name} <span className="form-input-mono" style={{ color: 'var(--text-muted)' }}>({product.sku})</span></li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', marginTop: '0.35rem' }}>No products assigned</p>
+                        )}
+                      </div>
+                      <p style={{ marginTop: '4px' }}>
+                        {supplier.reviewCount > 0
+                          ? `Rating: ${supplier.rating} / 5 · ${supplier.reviewCount} review${supplier.reviewCount === 1 ? '' : 's'}`
+                          : 'No supplier ratings recorded'}
+                      </p>
+                      {canManagePurchaseOrders && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '1rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            disabled={updatingSupplierId === supplier.id}
+                            onClick={() => handleSupplierArchive(supplier, !supplier.isArchived)}
+                          >
+                            {updatingSupplierId === supplier.id
+                              ? 'Saving...'
+                              : supplier.isArchived ? 'Restore' : 'Archive'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-danger btn-sm"
+                            disabled={updatingSupplierId === supplier.id || products.some((product) => product.supplierId === supplier.id) || purchaseOrders.some((order) => order.supplierId === supplier.id)}
+                            title={products.some((product) => product.supplierId === supplier.id) || purchaseOrders.some((order) => order.supplierId === supplier.id)
+                              ? 'Reassign products and purchase orders before deleting'
+                              : 'Permanently delete supplier'}
+                            onClick={() => handleSupplierDelete(supplier)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <strong>No suppliers have been added</strong>
+                  <span>Add a supplier to start assigning suppliers to products and purchase orders.</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Purchase Orders Management Table */}
           <div className="card" style={{ padding: 0 }}>
             <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border-color)' }}>
               <h3 className="card-title">Purchase Orders</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', marginTop: '6px' }}>
-                Create and track purchase orders, approvals, dispatch, and receiving status.
+                {isProcurementStaff
+                  ? 'Create, approve, and dispatch purchase orders; track supplier performance.'
+                  : 'Monitor purchase orders and receive approved deliveries into inventory.'}
               </p>
             </div>
             <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
@@ -614,16 +937,16 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                         </span>
                       </td>
                       <td style={{ fontSize: '0.8125rem' }}>
-                        {po.expectedDeliveryDate ? new Date(po.expectedDeliveryDate).toLocaleDateString() : 'Pending Approval'}
+                        {po.expectedDeliveryDate ? formatCompanyDate(po.expectedDeliveryDate, timezone) : 'Pending Approval'}
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         <div style={{ display: 'inline-flex', gap: '4px' }}>
-                          {po.status === 'DRAFT' && (
+                          {canManagePurchaseOrders && po.status === 'DRAFT' && (
                             <button className="btn btn-success btn-sm" onClick={() => handleApprovePo(po.id)}>
                               Approve PO
                             </button>
                           )}
-                          {po.status === 'APPROVED' && (
+                          {canManagePurchaseOrders && po.status === 'APPROVED' && (
                             <button className="btn btn-primary btn-sm" onClick={() => handleSendPo(po.id)}>
                               Send EDI
                             </button>
@@ -634,7 +957,13 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                             </button>
                           )}
                           {!canReceivePurchaseOrders && ['APPROVED', 'SENT', 'PARTIALLY_RECEIVED'].includes(po.status) && po.remainingQuantity > 0 && (
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Warehouse receives this order</span>
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Manager receives this order</span>
+                          )}
+                          {canReceivePurchaseOrders && po.status === 'DRAFT' && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Awaiting procurement approval</span>
+                          )}
+                          {canManagePurchaseOrders && ['SENT', 'PARTIALLY_RECEIVED'].includes(po.status) && po.remainingQuantity > 0 && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Awaiting manager receiving</span>
                           )}
                           {!['DRAFT', 'APPROVED', 'SENT', 'PARTIALLY_RECEIVED'].includes(po.status) && (
                             <span style={{ color: 'var(--text-muted)' }}>—</span>
@@ -660,25 +989,18 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
             </p>
           </div>
 
-          <div className="grid-cols-3" style={{ marginBottom: '1.5rem' }}>
-            {suppliers.map((supplier) => (
+          {ratedSuppliers.length > 0 ? (
+            <div className="grid-cols-3" style={{ marginBottom: '1.5rem' }}>
+              {ratedSuppliers.map((supplier) => (
               <div key={supplier.id} className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span className="badge badge-primary">Supplier #{supplier.id}</span>
-                  <span className={supplier.reviewCount ? 'badge badge-success' : 'badge badge-gray'}>
-                    {supplier.reviewCount ? `★ ${supplier.rating} / 5.0` : 'Not rated yet'}
-                  </span>
+                  <span className="badge badge-success">★ {Number(supplier.rating).toFixed(2)} / 5.0</span>
                 </div>
-                <h3 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '2px' }}>{supplier.name}</h3>
-                <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>{supplier.contact}</p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8125rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <span style={{ color: 'var(--text-muted)' }}>Submitted reviews:</span>
-                    <strong>{supplier.reviewCount || 0}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>Average lead time:</span>
-                    <strong>{supplier.leadTimeDays} business days</strong>
+                    <strong>{supplier.reviewCount}</strong>
                   </div>
                   {[
                     ['Delivery', supplier.averageDeliveryScore],
@@ -687,13 +1009,19 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                   ].map(([label, score]) => (
                     <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ color: 'var(--text-muted)' }}>{label}:</span>
-                      <strong>{supplier.reviewCount ? `${Number(score).toFixed(2)} / 5` : '—'}</strong>
+                      <strong>{Number(score).toFixed(2)} / 5</strong>
                     </div>
                   ))}
                 </div>
               </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state" style={{ marginBottom: '1.5rem' }}>
+              <strong>No supplier ratings recorded yet</strong>
+              <span>Supplier performance appears here after completed purchase orders have been reviewed.</span>
+            </div>
+          )}
 
           <div className="card" style={{ padding: 0 }}>
             <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border-color)' }}>
@@ -708,7 +1036,7 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                   {purchaseOrders.filter((po) => po.status === 'RECEIVED').map((po) => (
                     <tr key={po.id}>
                       <td><span className="badge badge-gray form-input-mono">PO-{po.id}</span></td>
-                      <td>{po.supplierName}</td>
+                      <td>Supplier #{po.supplierId}</td>
                       <td>{po.itemName}</td>
                       <td>{po.receivedQuantity} / {po.quantity}</td>
                       <td><span className="badge badge-success">RECEIVED</span></td>
@@ -744,79 +1072,115 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
           </div>
 
           {reviewingPoId && (
-            <form className="card" onSubmit={handleSubmitSupplierReview} style={{ marginTop: '1rem' }}>
-              <div className="card-header">
-                <div>
-                  <h3 className="card-title">Review Supplier · PO-{reviewingPoId}</h3>
-                  <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Score the completed delivery from 1 (poor) to 5 (excellent).</p>
-                </div>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReviewingPoId(null)}>Cancel</button>
-              </div>
-              <div className="grid-cols-3" style={{ gap: '1rem' }}>
-                {[
-                  ['deliveryScore', 'Delivery'],
-                  ['qualityScore', 'Product quality'],
-                  ['communicationScore', 'Communication'],
-                ].map(([field, label]) => (
-                  <label key={field} className="form-group">
-                    <span className="form-label">{label}</span>
-                    <select
-                      className="form-input"
-                      value={supplierReviewForm[field]}
-                      onChange={(event) => setSupplierReviewForm((form) => ({ ...form, [field]: event.target.value }))}
-                      required
-                    >
-                      <option value="">Choose a score</option>
-                      {[1, 2, 3, 4, 5].map((score) => (
-                        <option key={score} value={score}>{score} · {['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'][score]}</option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-              </div>
-              <label className="form-group" style={{ marginTop: '1rem' }}>
-                <span className="form-label">Feedback (optional)</span>
-                <textarea
-                  className="form-input"
-                  rows={3}
-                  maxLength={2000}
-                  value={supplierReviewForm.feedback}
-                  onChange={(event) => setSupplierReviewForm((form) => ({ ...form, feedback: event.target.value }))}
-                  placeholder="Add context for the scores"
-                />
-              </label>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
+            <div className="modal-overlay" onClick={() => !submittingReview && setReviewingPoId(null)}>
+              <form
+                className="modal-content"
+                onSubmit={handleSubmitSupplierReview}
+                onClick={(event) => event.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="supplier-review-title"
+              >
                 <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submittingReview || !supplierReviewForm.deliveryScore || !supplierReviewForm.qualityScore || !supplierReviewForm.communicationScore}
+                  type="button"
+                  className="modal-close"
+                  onClick={() => setReviewingPoId(null)}
+                  disabled={submittingReview}
+                  aria-label="Close supplier review"
                 >
-                  {submittingReview ? 'Submitting…' : 'Submit Review'}
+                  ×
                 </button>
-              </div>
-            </form>
+                <h2 id="supplier-review-title" style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.35rem' }}>
+                  Rate Supplier · PO-{reviewingPoId}
+                </h2>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.25rem' }}>
+                  Score the completed delivery from 1 (poor) to 5 (excellent).
+                </p>
+                <div className="grid-cols-3" style={{ gap: '1rem' }}>
+                  {[
+                    ['deliveryScore', 'Delivery'],
+                    ['qualityScore', 'Product quality'],
+                    ['communicationScore', 'Communication'],
+                  ].map(([field, label]) => (
+                    <label key={field} className="form-group">
+                      <span className="form-label">{label}</span>
+                      <select
+                        className="form-input"
+                        value={supplierReviewForm[field]}
+                        onChange={(event) => setSupplierReviewForm((form) => ({ ...form, [field]: event.target.value }))}
+                        required
+                      >
+                        <option value="">Choose a score</option>
+                        {[1, 2, 3, 4, 5].map((score) => (
+                          <option key={score} value={score}>{score} · {['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'][score]}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                <label className="form-group" style={{ marginTop: '1rem' }}>
+                  <span className="form-label">Feedback (optional)</span>
+                  <textarea
+                    className="form-input"
+                    rows={3}
+                    maxLength={2000}
+                    value={supplierReviewForm.feedback}
+                    onChange={(event) => setSupplierReviewForm((form) => ({ ...form, feedback: event.target.value }))}
+                    placeholder="Add context for the scores"
+                  />
+                </label>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setReviewingPoId(null)} disabled={submittingReview}>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={submittingReview || !supplierReviewForm.deliveryScore || !supplierReviewForm.qualityScore || !supplierReviewForm.communicationScore}
+                  >
+                    {submittingReview ? 'Submitting...' : 'Submit Review'}
+                  </button>
+                </div>
+              </form>
+            </div>
           )}
 
           {viewingReviewPoId && (() => {
             const review = purchaseOrders.find((po) => po.id === viewingReviewPoId)?.supplierReview;
             if (!review) return null;
             return (
-              <div className="card" style={{ marginTop: '1rem' }}>
-                <div className="card-header">
-                  <h3 className="card-title">Supplier Review · PO-{viewingReviewPoId}</h3>
-                  <span className="badge badge-success">
-                    Overall {((review.deliveryScore + review.qualityScore + review.communicationScore) / 3).toFixed(2)} / 5
-                  </span>
+              <div className="modal-overlay" onClick={() => setViewingReviewPoId(null)}>
+                <div
+                  className="modal-content"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="supplier-review-view-title"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    className="modal-close"
+                    onClick={() => setViewingReviewPoId(null)}
+                    aria-label="Close supplier review"
+                  >
+                    ×
+                  </button>
+                  <div className="card-header">
+                    <h3 id="supplier-review-view-title" className="card-title">Supplier Review · PO-{viewingReviewPoId}</h3>
+                    <span className="badge badge-success">
+                      Overall {((review.deliveryScore + review.qualityScore + review.communicationScore) / 3).toFixed(2)} / 5
+                    </span>
+                  </div>
+                  <div className="grid-cols-3" style={{ gap: '1rem' }}>
+                    <div><span className="form-label">Delivery</span><strong>{review.deliveryScore} / 5</strong></div>
+                    <div><span className="form-label">Product quality</span><strong>{review.qualityScore} / 5</strong></div>
+                    <div><span className="form-label">Communication</span><strong>{review.communicationScore} / 5</strong></div>
+                  </div>
+                  <p style={{ color: 'var(--text-muted)', marginTop: '1rem' }}>
+                    Reviewed by {review.reviewerName} · {formatCompanyDateTime(review.createdAt, timezone)}
+                  </p>
+                  {review.feedback && <p style={{ marginTop: '0.5rem' }}>{review.feedback}</p>}
                 </div>
-                <div className="grid-cols-3" style={{ gap: '1rem' }}>
-                  <div><span className="form-label">Delivery</span><strong>{review.deliveryScore} / 5</strong></div>
-                  <div><span className="form-label">Product quality</span><strong>{review.qualityScore} / 5</strong></div>
-                  <div><span className="form-label">Communication</span><strong>{review.communicationScore} / 5</strong></div>
-                </div>
-                <p style={{ color: 'var(--text-muted)', marginTop: '1rem' }}>
-                  Reviewed by {review.reviewerName} · {new Date(review.createdAt).toLocaleString()}
-                </p>
-                {review.feedback && <p style={{ marginTop: '0.5rem' }}>{review.feedback}</p>}
               </div>
             );
           })()}
@@ -865,6 +1229,21 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                     <input className="form-input" required={!['barcode', 'warehouseId'].includes(field)} type={['stock', 'reorderPoint', 'reorderQuantity', 'unitCost', 'price'].includes(field) ? 'number' : 'text'} step={['unitCost', 'price'].includes(field) ? '0.01' : '1'} value={productForm[field] ?? ''} onChange={(e) => updateProductField(field, e.target.value)} />
                   </label>
                 ))}
+                <label className="form-label">Supplier
+                  <select
+                    className="form-select"
+                    value={productForm.supplierId ?? ''}
+                    onChange={(event) => updateProductField('supplierId', event.target.value)}
+                    required
+                  >
+                    <option value="">Choose a registered supplier</option>
+                    {suppliers.filter((supplier) => !supplier.isArchived || Number(supplier.id) === Number(productForm.supplierId)).map((supplier) => (
+                      <option key={supplier.id} value={supplier.id}>
+                        {supplier.name}{supplier.isArchived ? ' (Archived — restore before reassignment)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label className="form-label">Product image URL
                   <input className="form-input" type="url" placeholder="https://example.com/product.jpg" value={productForm.imageUrl ?? ''} onChange={(e) => updateProductField('imageUrl', e.target.value)} />
                 </label>
@@ -913,8 +1292,8 @@ export const ManagerWorkspace = ({ workspace, apiBase, token, currentUser, onRef
                       <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>{p.warehouseId}</div>
                       <span className="badge badge-gray form-input-mono" style={{ fontSize: '0.6875rem' }}>{p.binLocation}</span>
                     </td>
-                    <td>R {p.unitCost.toFixed(2)}</td>
-                    <td><strong>R {p.price.toFixed(2)}</strong></td>
+                    <td>{money(p.unitCost)}</td>
+                    <td><strong>{money(p.price)}</strong></td>
                     <td><strong>{p.stock} units</strong></td>
                     <td>
                       <span className={`badge ${p.availableStock <= p.reorderPoint ? 'badge-danger' : 'badge-success'}`}>

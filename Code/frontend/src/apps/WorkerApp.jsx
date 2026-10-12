@@ -6,10 +6,9 @@ import { AppSidebar } from '../components/common/AppSidebar';
 import { Icon } from '../components/common/Icons';
 import { ManagerWorkspace } from '../components/manager/ManagerWorkspace';
 import { WarehouseWorkspace } from '../components/warehouse/WarehouseWorkspace';
+import { apiFetch as fetch, clearCsrfToken, setCsrfToken } from '../utils/apiClient';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
-const WORKER_TOKEN_KEY = 'syncstock_worker_token';
-const WORKER_USER_KEY = 'syncstock_worker_user';
 
 const normalizeEmployeeId = (value) => {
   if (typeof value !== 'string') return value;
@@ -23,6 +22,8 @@ const normalizeStoredUser = (user) => {
     employeeId: normalizeEmployeeId(user.employeeId),
   };
 };
+
+const workerAccountKey = (user) => `${user.companyId}:${user.email.toLowerCase()}`;
 
 const initialWorkspace = {
   products: [],
@@ -49,6 +50,7 @@ const initialWorkspace = {
   forecasts: [],
   orders: [],
   vatRate: 15,
+  companySettings: { currency: 'ZAR', timezone: 'Africa/Johannesburg' },
 };
 
 export default function WorkerApp() {
@@ -73,8 +75,9 @@ export default function WorkerApp() {
   const clearWorkerSession = () => {
     setCurrentUser(null);
     setToken('');
-    localStorage.removeItem(WORKER_TOKEN_KEY);
-    localStorage.removeItem(WORKER_USER_KEY);
+    clearCsrfToken();
+    localStorage.removeItem('syncstock_worker_token');
+    localStorage.removeItem('syncstock_worker_user');
     localStorage.removeItem('syncstock_admin_token');
     localStorage.removeItem('syncstock_admin_user');
   };
@@ -117,7 +120,7 @@ export default function WorkerApp() {
     }
   };
 
-  const handleLogin = async (user, newToken) => {
+  const handleLogin = async (user, csrfToken) => {
     if (user.role === 'ADMIN') {
       showToast('Admin accounts must use the admin portal.', 'error');
       return;
@@ -125,17 +128,22 @@ export default function WorkerApp() {
 
     const normalizedUser = normalizeStoredUser(user);
 
+    setCsrfToken(csrfToken);
     setCurrentUser(normalizedUser);
-    setToken(newToken);
-    localStorage.setItem(WORKER_TOKEN_KEY, newToken);
-    localStorage.setItem(WORKER_USER_KEY, JSON.stringify(normalizedUser));
+    setToken(true);
     showToast(`Logged in as ${normalizedUser.name} (${normalizedUser.employeeId})`, 'success');
   };
 
-  const handleLogout = () => {
-    clearWorkerSession();
-    setShowAuthModal(true);
-    showToast('You have signed out of your worker session', 'info');
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' });
+      showToast('You have signed out of your worker session', 'info');
+    } catch {
+      showToast('The server did not confirm sign-out. Close this browser if it is a shared device.', 'error');
+    } finally {
+      clearWorkerSession();
+      setShowAuthModal(true);
+    }
   };
 
   const handleQuickSwitch = async (targetUser) => {
@@ -145,15 +153,14 @@ export default function WorkerApp() {
       const res = await fetch(`${API_BASE}/api/auth/quick-switch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ employeeId: targetUser.employeeId }),
+        body: JSON.stringify({ email: targetUser.email, companyId: targetUser.companyId }),
       });
       const data = await res.json();
-      if (res.ok && data.token && data.user?.role !== 'ADMIN') {
+      if (res.ok && data.csrfToken && data.user?.role !== 'ADMIN') {
         const normalizedUser = normalizeStoredUser(data.user);
+        setCsrfToken(data.csrfToken);
         setCurrentUser(normalizedUser);
-        setToken(data.token);
-        localStorage.setItem(WORKER_TOKEN_KEY, data.token);
-        localStorage.setItem(WORKER_USER_KEY, JSON.stringify(normalizedUser));
+        setToken(true);
         showToast(`Switched session to ${normalizedUser.name} (${normalizedUser.employeeId})`, 'info');
       }
     } catch (err) {
@@ -178,23 +185,19 @@ export default function WorkerApp() {
 
   useEffect(() => {
     fetchDemoAccounts();
-
-    const savedToken = localStorage.getItem(WORKER_TOKEN_KEY);
-    const savedUser = localStorage.getItem(WORKER_USER_KEY);
-    if (savedToken && savedUser) {
-      try {
-        const parsedUser = normalizeStoredUser(JSON.parse(savedUser));
-        if (parsedUser.role === 'ADMIN') {
-          clearWorkerSession();
-          return;
-        }
-        setToken(savedToken);
-        setCurrentUser(parsedUser);
-        localStorage.setItem(WORKER_USER_KEY, JSON.stringify(parsedUser));
-      } catch {
-        clearWorkerSession();
-      }
-    }
+    localStorage.removeItem('syncstock_admin_token');
+    localStorage.removeItem('syncstock_admin_user');
+    localStorage.removeItem('syncstock_worker_token');
+    localStorage.removeItem('syncstock_worker_user');
+    fetch(`${API_BASE}/api/auth/session`)
+      .then(async (res) => res.ok ? res.json() : null)
+      .then((session) => {
+        if (!session?.user || session.user.role === 'ADMIN') return;
+        setCsrfToken(session.csrfToken);
+        setCurrentUser(normalizeStoredUser(session.user));
+        setToken(true);
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -206,6 +209,7 @@ export default function WorkerApp() {
   useEffect(() => {
     if (currentUser?.role === 'CASHIER') setActiveNav('pos');
     else if (currentUser?.role === 'WAREHOUSE_STAFF') setActiveNav('receiving');
+    else if (currentUser?.role === 'PROCUREMENT_STAFF') setActiveNav('forecasting');
     else setActiveNav('overview');
   }, [currentUser?.role]);
 
@@ -262,23 +266,20 @@ export default function WorkerApp() {
               </div>
               <div style={{ textAlign: 'left', lineHeight: 1.15 }}>
                 <div style={{ fontSize: '0.8125rem', fontWeight: 700 }}>{currentUser.name}</div>
-                <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                  {currentUser.role}
-                </div>
               </div>
 
               {demoUsers.length > 0 && (
                 <select
                   className="form-select"
                   style={{ width: 'auto', padding: '2px 6px', fontSize: '0.6875rem', marginLeft: '4px' }}
-                  value={currentUser.employeeId}
+                  value={workerAccountKey(currentUser)}
                   onChange={(e) => {
-                    const selected = demoUsers.find((user) => user.employeeId === e.target.value);
+                    const selected = demoUsers.find((user) => workerAccountKey(user) === e.target.value);
                     if (selected) handleQuickSwitch(selected);
                   }}
                 >
                   {demoUsers.map((user) => (
-                    <option key={user.employeeId} value={user.employeeId}>
+                    <option key={workerAccountKey(user)} value={workerAccountKey(user)}>
                       {user.name} ({user.role})
                     </option>
                   ))}

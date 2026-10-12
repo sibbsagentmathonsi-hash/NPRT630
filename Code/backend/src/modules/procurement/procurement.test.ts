@@ -8,15 +8,27 @@ import {
   generateLowStockPurchaseOrders,
   getPurchaseOrders,
   getSupplierPerformance,
+  getActiveSupplierById,
   addSupplierReview,
+  addSupplier,
+  hydrateSuppliers,
   purchaseOrders,
   receivePurchaseOrder,
   sendPurchaseOrder,
   suppliers,
+  setSupplierArchived,
+  validateNewSupplier,
   validateSupplierReview,
 } from './procurement';
 import { findProductBySku, getInventoryItems } from '../../inventory';
 import { runInCompany } from '../../config/tenancy';
+
+hydrateSuppliers([
+  { id: 1, name: 'Test Supplier One', contact: 'one@example.test', leadTimeDays: 3 },
+  { id: 2, name: 'Test Supplier Two', contact: 'two@example.test', leadTimeDays: 5 },
+  { id: 3, name: 'Test Supplier Three', contact: 'three@example.test', leadTimeDays: 7 },
+  { id: 4, name: 'Test Supplier Four', contact: 'four@example.test', leadTimeDays: 4 },
+]);
 
 test('procurement: getPurchaseOrders returns formatted view with supplier names and remaining qty', () => {
   const orders = getPurchaseOrders();
@@ -196,4 +208,37 @@ test('procurement: reviews require full receipt and produce supplier averages on
     }
   });
   assert.match(String(otherCompanyError), /Purchase order not found/);
+});
+
+test('procurement: supplier creation requires explicit values and rejects duplicates', () => {
+  assert.throws(() => validateNewSupplier({}), /name, contact details, and lead time are required/);
+  assert.throws(() => validateNewSupplier({ name: 'New supplier', contact: 'new@example.test', leadTimeDays: 0 }), /whole number from 1 to 365/);
+  assert.throws(() => validateNewSupplier({ name: ' test supplier one ', contact: 'unique@example.test', leadTimeDays: 3 }), /already exists/);
+
+  const input = validateNewSupplier({ name: 'New Supplier', contact: 'new@example.test', leadTimeDays: 6 });
+  const created = addSupplier({ ...input, id: 5 });
+  assert.equal(created.name, 'New Supplier');
+  assert.equal(created.contact, 'new@example.test');
+  assert.equal(created.leadTimeDays, 6);
+});
+
+test('procurement: archived suppliers remain visible but cannot receive new purchase orders', () => {
+  const supplier = getActiveSupplierById(5);
+  assert.ok(supplier);
+  assert.equal(supplier.isArchived, false);
+
+  setSupplierArchived(5, true);
+  assert.equal(getActiveSupplierById(5), undefined);
+  assert.equal(getSupplierPerformance().some((entry) => entry.id === 5 && entry.isArchived), true);
+  assert.throws(() => createPurchaseOrder(5, 'TEST-005', 'Archived supplier item', 1), /active supplier/);
+
+  setSupplierArchived(5, false);
+  assert.equal(getActiveSupplierById(5)?.id, 5);
+});
+
+test('procurement: purchase order creation rejects unregistered suppliers', () => {
+  assert.throws(() => createPurchaseOrder(999, 'TEST-001', 'Test item', 1), /registered with this company/);
+  runInCompany('company-other', () => {
+    assert.throws(() => createPurchaseOrder(1, 'TEST-001', 'Test item', 1), /registered with this company/);
+  });
 });

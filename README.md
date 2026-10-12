@@ -33,14 +33,16 @@ SyncStock 2.0 provides dedicated workspaces for each operational role in a retai
 
 | Feature | Detail |
 | :--- | :--- |
-| **Dual-Portal Architecture** | Worker Operations Portal + Admin Governance Console — completely separated HTML entry points and JWT namespaces |
+| **Dual-Portal Architecture** | Worker Operations Portal + Admin Governance Console with separate HTML entry points and role-protected API access |
 | **Role-based portals** | Five roles with endpoint-level allowlists; actual permissions are documented below |
-| **Real TOTP MFA** | RFC 6238 Time-based OTP via `otplib` — QR URI generation, enrollment, and verification |
+| **Authentication & session security** | HttpOnly cookie sessions, in-memory CSRF tokens, password setup, TOTP MFA, rate limits, security headers, and production Turnstile checks |
 | **PostgreSQL Persistence** | Sequelize ORM; bin stock, users, sales, movements, orders, purchase orders, and cycle counts hydrate on startup |
+| **Supplier lifecycle** | Create suppliers without defaults, assign products, archive/restore suppliers, and guard permanent deletion while references remain |
 | **Demand Forecasting** | Linear regression over daily stock movements, with sparse-history fallbacks and injectable seasonality/promotion factors |
 | **Payment Safety** | Cash tender is validated; Card/QR and electronic refunds fail closed without a provider authorization |
 | **Operational Signals** | Liveness/readiness endpoints and in-memory per-route average/p95 latency metrics |
 | **Automated Test Coverage** | Native Node.js tests across inventory, auth, procurement, forecasting, integration ports, and metrics |
+| **Repository security automation** | GitHub Actions secret scanning and production dependency auditing, plus weekly Dependabot updates |
 | **Professional Brand Identity** | Dual-variant SVG vector logo (`BrandLogo.jsx`) — inventory cube (worker) / shield crest (admin) |
 | **Dark Mode** | Full light/dark design system via CSS custom properties |
 
@@ -75,7 +77,7 @@ Deployment notes report SMTP relay authentication configured on the EC2 host; en
 | Persistence | PostgreSQL/Sequelize tables and startup hydration for major operational state | Development/test can use in-memory mode; return history and some seeded/reference collections are not fully restored |
 | Forecasting | Regression-based demand trend over up to 730 daily buckets; sparse-history fallback and context multipliers | No configured promotion/seasonal feed, trained deep-learning model, or measured forecast accuracy |
 | Payments/integrations | Payment provider contract validates full authorization; integrations have provider-neutral contracts | No live payment, POS, commerce, accounting, or shipping provider is configured. Card/QR and electronic refunds are unavailable until one is registered |
-| Operations | Health/readiness checks and in-memory request latency/error metrics | No verified latency/uptime SLOs, HA, backup/replication plan, CI/CD, centralized monitoring, Kubernetes, or infrastructure-as-code |
+| Operations | Health/readiness checks and in-memory request latency/error metrics | No verified latency/uptime SLOs, HA, backup/replication plan, application build/test/deployment CI/CD, centralized monitoring, Kubernetes, or infrastructure-as-code |
 
 The accompanying project specifications describe a broader target architecture. They are design goals, not evidence that these capabilities are deployed in this prototype.
 
@@ -90,8 +92,11 @@ This status describes the implemented prototype and the AWS demo, not the broade
 - Purchase order creation, approval, cancellation, status updates, and partial/full receiving.
 - Online-order stock reservation, commit, and release workflows.
 - PostgreSQL persistence through Sequelize, including production startup checks and initial administrator setup.
-- Authentication features including password setup, JWT sessions, TOTP MFA, and production restrictions on demo account discovery and quick-switch.
-- Automated backend tests and production builds. The latest local verification completed with 60 backend tests passing and both backend and frontend builds succeeding.
+- Authentication features including password setup, HttpOnly cookie sessions with CSRF protection, TOTP MFA, and production restrictions on demo account discovery and quick-switch.
+- Supplier management with product assignment, archive/restore, and permanent deletion blocked while products or purchase orders still reference a supplier.
+- API security controls including rate limiting, security headers, production Turnstile enforcement, HTTPS checks, and PostgreSQL TLS requirements.
+- Automated backend tests and production builds. The latest local verification completed with 76 backend tests passing and both backend and frontend builds succeeding.
+- GitHub Actions scans repository history for secrets and audits production dependencies; Dependabot checks npm dependencies and workflow actions weekly. These checks do not constitute an application deployment pipeline.
 - A single-instance AWS EC2 demo serving the worker portal and PostgreSQL-backed API readiness check over HTTP.
 
 ### Partially done
@@ -100,7 +105,7 @@ This status describes the implemented prototype and the AWS demo, not the broade
 - Persistence hydrates the main operational collections, but return history and some reference/seed data are not fully restored.
 - Purchase orders can be marked sent in the application, but no supplier notification or external procurement connection is configured.
 - Online orders support reservation and fulfillment state changes, but there is no external commerce connection or picking-task workflow.
-- Security includes role checks, password rules, MFA, and application audit records; audit records are not database-enforced immutable, and the recorded client IP is a loopback placeholder.
+- Security includes role checks, password rules, MFA, HttpOnly cookie sessions with CSRF protection, API security headers, authentication rate limits, and production Turnstile enforcement; the rate-limit store is in-memory, audit records are not database-enforced immutable, and the recorded client IP is a loopback placeholder.
 - The AWS demo is a single host with PostgreSQL and basic health/readiness checks. It is HTTP-only and has no demonstrated high availability, backup/restore process, or verified operational service levels.
 
 ### Not implemented
@@ -108,7 +113,7 @@ This status describes the implemented prototype and the AWS demo, not the broade
 - Independently deployed microservices, an API gateway, database-per-service, distributed message bus/saga, or multi-instance concurrency strategy.
 - Active payment, POS, e-commerce, accounting, shipping, or supplier-system adapters.
 - A validated/trained forecasting service, promotion/seasonality feed, inventory-turnover reporting, or EOQ optimization.
-- High availability, tested backup/restore, centralized monitoring, CI/CD, infrastructure-as-code, or an HTTPS deployment.
+- High availability, tested backup/restore, centralized monitoring, an application build/test/deployment pipeline, infrastructure-as-code, or an HTTPS deployment.
 - Automated end-to-end browser tests, PostgreSQL-backed integration tests, database migration tooling, or spreadsheet-import tooling.
 
 ---
@@ -178,25 +183,16 @@ sequenceDiagram
         API->>AUTH: setFirstPassword(userId, newPassword)
         AUTH->>DB: persistUser(updatedUser)
     end
-    alt MFA Enrolled
-        AUTH-->>API: { requiresMfa: true, tempToken }
-        API-->>FE: 200 { requiresMfa }
-        FE->>U: Prompt TOTP code
-        U->>FE: 6-digit TOTP
-        FE->>API: POST /api/auth/login (with mfaCode)
-        API->>AUTH: verifyMfa(userId, mfaCode)
-        AUTH->>AUTH: otplib.verifySync({ token, secret })
-    end
-    AUTH->>AUTH: generateToken(user) — JWT (8h)
+    AUTH->>AUTH: generateToken(user, csrfToken)
+    API->>API: Set HttpOnly SameSite session cookie
     AUTH->>DB: logSecurityEvent(LOGIN_SUCCESS)
-    AUTH-->>API: { token, user: PublicUser }
-    API-->>FE: 200 { token, user }
-    FE->>FE: Store token in localStorage
+    API-->>FE: 200 { user, csrfToken }
+    FE->>FE: Keep CSRF token in memory
     FE->>U: Render role workspace
 ```
 
 > [!CAUTION]
-> The production deployment is HTTP-only and does not encrypt browser traffic. Do not use it with real passwords or sensitive business data until HTTPS is configured. Production does not seed demo accounts and disables demo account discovery and quick-switch; development/test fallback has separate demo credentials and is not representative of production authentication. Email verification codes may be written to backend logs when SMTP delivery is not configured, tokens are stored in browser `localStorage`, and audit IP addresses use a loopback placeholder. The prototype is not production-ready for real user data.
+> The production demo deployment is HTTP-only and does not encrypt browser traffic. Do not use it with real passwords or sensitive business data until HTTPS is configured. Production does not seed demo accounts and disables demo account discovery and quick-switch; a new production database requires the configured administrator bootstrap. Browser sessions use an HttpOnly cookie and CSRF token, while email verification requires configured SMTP. Production also requires Turnstile configuration and PostgreSQL TLS. Audit IP addresses currently use a loopback placeholder, and in-memory rate limiting is intended for a single API instance. The prototype is not production-ready for real user data.
 
 ---
 
@@ -439,6 +435,18 @@ erDiagram
 
 ---
 
+### 📦 Procurement Workspace and Supplier Management
+
+| Feature | Detail |
+| :--- | :--- |
+| **Supplier registration** | Procurement staff create suppliers with explicitly supplied details; the form does not silently fill defaults |
+| **Product assignment** | A product is linked to one supplier, while one supplier can supply multiple products. Supplier creation can assign products, and assignments can be changed through product editing |
+| **Archive and restore** | Archived suppliers remain available for historical records but cannot be selected for new product assignments, purchase orders, or automatic replenishment |
+| **Guarded permanent deletion** | A supplier can be permanently deleted only after its product and purchase-order references have been reassigned; otherwise the API rejects the deletion |
+| **Purchase orders and reviews** | Procurement staff create and manage orders, record supplier reviews after fully received orders, and see supplier rating summaries |
+
+---
+
 ### 🏭 Warehouse Workspace
 
 | Feature | Detail |
@@ -478,11 +486,12 @@ erDiagram
 | **Dual-identifier login** | Accepts email address, Employee ID (`EMP-XXX-NNN`), or generic `identifier` field — any format works |
 | **First-login password wizard** | New accounts use the `isFirstLogin` flag; a wizard enforces password-strength rules |
 | **Password strength rules** | Minimum 8 characters, at least one uppercase, one lowercase, one digit, one symbol — validated client and server side |
-| **Email OTP verification** | A 6-digit code can be sent using optional SMTP and expires after 10 minutes. Codes are also written to backend logs; outstanding codes are in process memory |
+| **Email OTP verification** | Requires configured SMTP; the 6-digit code expires after 10 minutes and is kept in process memory without being written to logs |
 | **TOTP MFA enrollment** | On enrollment, server generates a random secret, returns a QR-compatible URI (`otpauth://`), and the user scans it with any authenticator app |
-| **TOTP verification** | Every login with MFA enrolled requires a valid 6-digit TOTP code (30-second window, RFC 6238) verified server-side with `otplib` |
-| **JWT session tokens** | 8-hour expiry; signed with `JWT_SECRET`; browser tokens are stored in `localStorage` |
-| **Separate JWT namespaces** | Worker portal stores token in `syncstock_worker_token`; Admin portal in `syncstock_admin_token` — cross-portal token reuse is rejected |
+| **TOTP verification** | A valid 6-digit TOTP code (30-second window, RFC 6238) can verify enrollment; the current login route does not require MFA for every sign-in |
+| **Cookie-backed sessions** | Signed with `JWT_SECRET`; the browser receives an HttpOnly, SameSite session cookie rather than storing the session token in web storage |
+| **CSRF protection** | State-changing authenticated requests require a CSRF token held in memory by the portal and sent in the `x-csrf-token` header |
+| **Authentication defenses** | Login/verification rate limits, security headers, production HTTPS enforcement, and Turnstile verification for authentication-sensitive requests |
 
 ---
 
@@ -592,7 +601,7 @@ The Administrator can create all other staff accounts (Managers, Cashiers, Wareh
 
 ## API Reference
 
-All routes are served by the Express API on port `4000`. Bearer JWT authentication is required except for liveness/readiness, demo-account listing, login, and verification flows. Access varies per endpoint.
+All routes are served by the Express API on port `4000`. Cookie-session authentication is required except for liveness/readiness, non-production demo-account listing, login, and verification flows. Access varies per endpoint.
 
 | Area | Representative routes | Purpose |
 | :--- | :--- | :--- |
@@ -601,11 +610,13 @@ All routes are served by the Express API on port `4000`. Bearer JWT authenticati
 | Inventory | `/api/products`, `/api/stock-movements`, `/api/inventory/workspace`, `/api/inventory/items` | Catalogue, movement history, role data, warehouse/bin balances |
 | Sales/returns | `POST /api/sales`, `GET /api/sales/receipts`, `POST /api/returns` | Checkout, receipts, returns; electronic payment needs a configured provider |
 | Receiving/counts | `POST /api/receiving`, `/api/cycle-counts` | Bin receiving and cycle-count reconciliation |
-| Procurement | `/api/purchase-orders/*`, `/api/suppliers`, `/api/supplier-performance` | Replenishment, approval, dispatch status, receiving and supplier metrics |
+| Procurement | `/api/purchase-orders/*`, `/api/suppliers`, `/api/supplier-performance` | Replenishment, supplier/product assignments, order lifecycle, archive/restore, guarded deletion, and supplier metrics |
 | Forecasting | `GET /api/forecast`, `GET /api/forecast/:sku` | Demand and stockout-risk estimates |
 | Online orders | `/api/orders`, `/api/orders/reserve`, `/api/orders/:id/commit`, `/api/orders/:id/release` | Reserve, commit, and release stock |
 
-There are no separate `/api/admin/products`, `/api/admin/suppliers`, `/api/admin/purchase-orders`, or `/api/admin/forecast` aliases. Admin uses shared endpoints when allowed. The unauthenticated `/api/auth/quick-switch` route is a demo shortcut and must be removed/restricted before production. The [detailed Code guide](Code/README.md) lists all routes, schema, configuration, and role allowlists.
+Supplier management uses `POST /api/suppliers` to create a supplier and optionally assign products, `PATCH /api/suppliers/:id/archive` to archive or restore it, and `DELETE /api/suppliers/:id` for guarded permanent deletion. These mutations are restricted to Procurement; deletion is refused while products or purchase orders reference the supplier.
+
+There are no separate `/api/admin/products`, `/api/admin/suppliers`, `/api/admin/purchase-orders`, or `/api/admin/forecast` aliases. Admin uses shared endpoints when allowed. Demo account discovery and quick-switch are unavailable in production. The [detailed Code guide](Code/README.md) lists all routes, schema, configuration, and role allowlists.
 
 ---
 
@@ -625,11 +636,12 @@ npm.cmd run test --workspace backend
 | **Inventory Core** | Sales (VAT, discount), returns, stock receiving, cycle counts, reservations, valuation metrics, low-stock detection, dashboard KPIs |
 | **Procurement** | PO creation, approval, dispatch, partial and full receiving, cancellation, low-stock PO generation, supplier ratings |
 | **Forecasting** | Regression training, sparse-history fallback, promotion/seasonality factors, reorder point, and stockout risk |
-| **Auth & Security** | Password policy, employee IDs, JWT verification, role permissions, TOTP MFA, and email OTP |
+| **Auth & Security** | Password policy, employee IDs, cookie sessions, CSRF, role permissions, TOTP MFA, email verification, bot protection, and API security |
 | **Provider contracts** | Default-deny payment authorization/refunds and full-amount validation |
+| **Administration & safeguards** | Company settings, CORS policy, API security, bot protection, and end-to-end API behavior |
 | **Observability** | Per-route request/error counts and average/p95 calculation |
 
-The latest local run on 2026-10-08 passed **59 tests with 0 failures**. Rerun the command above after changing the code.
+The latest local run passed **76 tests with 0 failures**. Rerun the command above after changing the code.
 
 > [!IMPORTANT]
 > Tests run with `NODE_ENV=test` and do not connect to PostgreSQL. `Code/backend/src/server.test.ts` contains production-mode API behavior tests, but there is no PostgreSQL-backed integration suite or database migration test suite. The frontend has no test/lint script; use the production build to verify it.
@@ -649,7 +661,14 @@ Configure `Code/backend/.env` (copy from `Code/backend/.env.example`):
 | `DB_USER` | `postgres` | Database user |
 | `DB_PASSWORD` | *(set in `Code/backend/.env`)* | Database password |
 | `DB_NAME` | `inventory_db` | PostgreSQL schema / database name |
-| `JWT_SECRET` | `dev-secret-key` | HMAC-SHA256 signing key for session tokens; set a long, random secret in production |
+| `DB_SSL` | `false` outside production | Enable PostgreSQL TLS; required in production |
+| `JWT_SECRET` | *(required)* | HMAC-SHA256 signing key for session cookies; set a long, random secret in production |
+| `CORS_ORIGINS` | Local Vite origins from the example | Comma-separated browser origins allowed to call the API |
+| `TRUST_PROXY_HOPS` | `0` | Number of trusted reverse-proxy hops for HTTPS detection and client-IP rate limits |
+| `ENFORCE_HTTPS` | Enabled in production | Require HTTPS for production API requests |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | *(required in production)* | Cloudflare Turnstile keys for authentication bot protection |
+| `TURNSTILE_ALLOWED_HOSTNAMES` | *(required in production)* | Exact hostnames accepted by Cloudflare Siteverify |
+| `VITE_API_PROXY_TARGET` | `http://localhost:<PORT>` | Optional Vite development proxy override; by default the API target follows `PORT` |
 | `SMTP_HOST` | *(optional)* | SMTP relay for email OTP delivery |
 | `SMTP_PORT` | `587` | SMTP relay port |
 | `SMTP_SECURE` | `false` | Use implicit TLS for the SMTP connection (`true` or `false`) |

@@ -60,16 +60,16 @@ The project specifications also describe separately deployed microservices, data
 | Status | Roadmap area | Current system |
 | :--- | :--- | :--- |
 | **Done** | Core MVP | Worker/admin portals, role-protected API routes, product and bin inventory, sales, returns, stock movements/adjustments, receiving, cycle counts, and dashboard KPIs |
-| **Done** | Procurement basics | Suppliers, low-stock purchase-order generation, approval/status transitions, and partial/full receipt |
+| **Done** | Procurement basics | Supplier creation, product assignments, archive/restore, guarded deletion, low-stock purchase-order generation, approval/status transitions, and partial/full receipt |
 | **Done** | Basic reservation flow | Online-order stock reservation, commit, and release are implemented |
-| **Done** | Baseline tests and build | Backend unit/API behavior tests and backend/frontend production builds; latest local verification: 60 tests passed |
+| **Done** | Baseline tests and build | Backend unit/API behavior tests and backend/frontend production builds; latest local verification: 76 tests passed |
 | **Partial** | Persistence and audit | PostgreSQL persists core system data and application audit events; not every collection is fully restored, and audit immutability is not enforced by the database |
 | **Partial** | Forecasting and reporting | Explainable regression forecasts, fallback behavior, reorder suggestions, and KPIs; no validated accuracy, promotion feed, inventory-turnover report, or EOQ model |
-| **Partial** | Security hardening | Password policy, route allowlists, MFA, and production demo-login restrictions exist; no TLS on the live demo, audit IP is a placeholder, and codes may be logged when email delivery is not configured |
-| **Partial** | Deployment/operations | One AWS EC2 demo with PostgreSQL, nginx, systemd, and health/readiness checks; no HA, tested backup/restore, CI/CD, centralized monitoring, or verified SLOs |
+| **Partial** | Security hardening | Password hashing, role checks, optional TOTP enrollment/verification, cookie sessions with CSRF protection, API security headers, auth rate limits, Turnstile bot checks, production HTTPS enforcement, PostgreSQL TLS requirements, and GitHub secret/dependency checks are implemented; deployment TLS, shared rate-limit storage, RLS, credential rotation after scan findings, and full endpoint validation remain deployment or follow-up work |
+| **Partial** | Deployment/operations | One AWS EC2 demo with PostgreSQL, nginx, systemd, and health/readiness checks; no HA, tested backup/restore, application build/test/deployment pipeline, centralized monitoring, or verified SLOs |
 | **Not done** | Distributed architecture | No independently deployed services, API gateway, broker/event bus, distributed saga, or database-per-service |
 | **Not done** | External integrations | No active payment, POS, commerce, accounting, shipping, or supplier vendor adapter |
-| **Not done** | Full operational readiness | No production HTTPS configuration, infrastructure-as-code, PostgreSQL-backed integration suite, end-to-end browser suite, or spreadsheet migration tooling |
+| **Not done** | Full operational readiness | No verified end-to-end production HTTPS deployment, infrastructure-as-code, PostgreSQL-backed integration suite, browser automation suite, or spreadsheet migration tooling |
 
 | Area | Implemented | Still target / limitation |
 | :--- | :--- | :--- |
@@ -79,7 +79,7 @@ The project specifications also describe separately deployed microservices, data
 | Forecasting | Simple linear regression fitted to up to 730 daily sales buckets, with sparse-history fallback and injectable promotion/seasonality multipliers | No configured promotion calendar, market data, external training pipeline, or validated ML accuracy |
 | Payments and integrations | Provider interfaces; Card/QR and electronic refunds fail closed without provider approval | No active payment, POS, commerce, accounting, or shipping vendor adapter |
 | Architecture | Modular monolith, one Express process and one PostgreSQL database | No deployed microservices, API gateway, broker, distributed saga, or database-per-service |
-| Operations | Health/readiness endpoints, in-memory per-route average/p95/error metrics, production DB fail-fast | No measured SLO, HA, backups/replication, centralized telemetry, CI/CD, Kubernetes, or infrastructure-as-code |
+| Operations | Health/readiness endpoints, in-memory per-route average/p95/error metrics, production DB fail-fast | No measured SLO, HA, backups/replication, centralized telemetry, Kubernetes, or infrastructure-as-code |
 
 ## Project Documents
 
@@ -95,7 +95,7 @@ The project specifications also describe separately deployed microservices, data
 
 | Feature | Detail |
 | :--- | :--- |
-| **Dual-Portal Architecture** | Worker Operations Portal + Admin Governance Console — completely separated HTML entry points and JWT namespaces |
+| **Dual-Portal Architecture** | Worker Operations Portal + Admin Governance Console with separate HTML entry points and role-protected API access |
 | **Strict RBAC** | Five distinct roles; Admin is intentionally isolated from operational permission hierarchy |
 | **Real TOTP MFA** | RFC 6238 Time-based OTP via `otplib` — QR URI generation, enrollment, and verification |
 | **PostgreSQL Persistence** | Sequelize ORM; multi-bin stock, transaction records, users, orders, and counts hydrate on startup |
@@ -165,11 +165,11 @@ sequenceDiagram
         API->>AUTH: verifyMfa()
     end
     AUTH-->>API: Public user
-    API-->>FE: 8-hour JWT
-    FE->>FE: Store token in localStorage
+    API-->>FE: HttpOnly session cookie + CSRF token and public user
+    FE->>FE: Keep CSRF token in memory; never store the session token in browser storage
 ```
 
-In development/test memory fallback, seeded passwords are plaintext. Production does not seed demo users; a new production database requires `ADMIN_EMAIL` and `ADMIN_PASSWORD` and forces the configured admin through first-login password setup. Existing databases from earlier versions must have any seeded demo accounts removed or rotated before deployment. First-password setup requires the employee's authenticated first-login token and cannot be reused after activation. Email verification codes are logged by the backend, and audit IP addresses currently use a loopback placeholder. Demo account discovery and unauthenticated quick-switch are disabled in production. CORS allows only the configured `CORS_ORIGINS` list (localhost Vite origins by default outside production); configure the deployed frontend origin explicitly and configure TLS at a trusted reverse proxy. The prototype is not production-ready for real user data.
+In development/test memory fallback, seeded passwords are plaintext. Production does not seed demo users; a new production database requires `ADMIN_EMAIL` and `ADMIN_PASSWORD` and forces the configured admin through first-login password setup. Existing databases from earlier versions must have any seeded demo accounts removed or rotated before deployment. Browser authentication uses a server-set HttpOnly cookie and a CSRF token held only in memory; first-password setup requires the authenticated first-login session and cannot be reused after activation. Email verification requires configured SMTP, and audit IP addresses currently use a loopback placeholder. Demo account discovery and unauthenticated quick-switch are disabled in production. CORS allows only the configured `CORS_ORIGINS` list (localhost Vite origins by default outside production); configure the deployed frontend origin explicitly and configure TLS at a trusted reverse proxy. The prototype is not production-ready for real user data.
 
 ## Role Workspaces
 
@@ -485,6 +485,18 @@ Supplier ratings returned by the API are averages of persisted reviews, not edit
 
 ---
 
+### 📦 Procurement Workspace and Supplier Management
+
+| Feature | Detail |
+| :--- | :--- |
+| **Supplier registration** | Procurement staff create suppliers with explicitly supplied details; the form does not silently fill defaults |
+| **Product assignment** | Each product references one supplier; a supplier can supply many products. Supplier creation can assign products, and assignments can be changed by editing products |
+| **Archive and restore** | Archived suppliers remain available for history but cannot be selected for new product assignments, purchase orders, or automatic replenishment |
+| **Guarded permanent deletion** | Permanent deletion is refused while products or purchase orders reference the supplier; reassign references first |
+| **Purchase orders and reviews** | Procurement staff create and manage purchase orders, review a supplier once per fully received order, and see calculated supplier-rating summaries |
+
+---
+
 ### 🏭 Warehouse Workspace
 
 | Feature | Detail |
@@ -524,11 +536,12 @@ Supplier ratings returned by the API are averages of persisted reviews, not edit
 | **Dual-identifier login** | Accepts email address, Employee ID (`XXX-NNN`), or generic `identifier` field — any format works |
 | **First-login password wizard** | New accounts use the `isFirstLogin` flag; a multi-step wizard enforces password-strength rules before granting access |
 | **Password strength rules** | Minimum 8 characters, at least one uppercase, one lowercase, one digit, one symbol — validated client and server side |
-| **Email OTP verification** | A 6-digit code can be sent through optional SMTP and expires after 10 minutes. Codes are also written to backend logs; outstanding verification codes are held in process memory |
+| **Email OTP verification** | Requires configured SMTP; the 6-digit code expires after 10 minutes and is kept in process memory without being written to logs |
 | **TOTP MFA enrollment** | On enrollment, server generates a random secret, returns a QR-compatible URI (`otpauth://`), and the user scans it with any authenticator app |
-| **TOTP verification** | Every login with MFA enrolled requires a valid 6-digit TOTP code (30-second window, RFC 6238) verified server-side with `otplib` |
-| **JWT session tokens** | 8-hour expiry; signed with `JWT_SECRET`; includes user ID, role, employeeId, name; browser tokens are stored in `localStorage` |
-| **Separate JWT namespaces** | Worker portal stores token in `syncstock_worker_token`; Admin portal in `syncstock_admin_token` — cross-portal token reuse is rejected |
+| **TOTP verification** | A valid 6-digit TOTP code (30-second window, RFC 6238) can verify an enrollment; the current login route does not require MFA for every sign-in |
+| **Cookie-backed sessions** | Signed with `JWT_SECRET`; the browser receives an HttpOnly, SameSite cookie instead of storing the session token in web storage |
+| **CSRF protection** | Authenticated state-changing requests require an in-memory CSRF token sent in the `x-csrf-token` header |
+| **Authentication defenses** | Login and verification rate limits, security headers, production HTTPS enforcement, and production Turnstile verification |
 
 ---
 
@@ -694,7 +707,7 @@ All routes are served by the Express API on port `4000`. Authorization is enforc
 | `POST` | `/api/auth/login` | None | Authenticate by email, employee ID, or identifier |
 | `POST` | `/api/auth/set-first-password` | Authenticated first-login session | Set a first password once for the matching employee |
 | `POST` | `/api/auth/mfa/enroll` | Authenticated staff | Create TOTP enrollment URI |
-| `POST` | `/api/auth/verify-mfa` | None | Verify a TOTP code |
+| `POST` | `/api/auth/verify-mfa` | Authenticated staff | Verify a TOTP code |
 | `POST` | `/api/auth/quick-switch` | None, non-production only | Demo account switch; returns 404 in production |
 | `POST` | `/api/auth/send-verification-code` | None | Send/simulate email verification code |
 | `POST` | `/api/auth/verify-email-code` | None | Verify email code |
@@ -735,6 +748,9 @@ All routes are served by the Express API on port `4000`. Authorization is enforc
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/suppliers` | Admin, Manager, Warehouse, Procurement | List suppliers |
+| `POST` | `/api/suppliers` | Procurement | Create a supplier and optionally assign products |
+| `PATCH` | `/api/suppliers/:id/archive` | Procurement | Archive or restore a supplier |
+| `DELETE` | `/api/suppliers/:id` | Procurement | Permanently delete only when no products or purchase orders reference it |
 | `GET` | `/api/supplier-performance` | Admin, Manager, Procurement | Supplier metrics |
 | `GET` | `/api/purchase-orders` | Admin, Manager, Warehouse, Procurement | List purchase orders |
 | `POST` | `/api/purchase-orders` | Manager, Procurement | Create purchase order |
@@ -770,7 +786,9 @@ npm.cmd run test --workspace backend
 | **Inventory Core** | `inventory.test.ts` | Sales (VAT, discount), returns, stock receiving, cycle counts, reservations, valuation metrics, low-stock detection, dashboard KPIs |
 | **Procurement** | `procurement.test.ts` | PO creation, approval, dispatch, partial and full receiving, cancellation, low-stock PO generation, supplier ratings |
 | **Forecasting** | `forecasting.test.ts` | Regression training, sparse-history fallback, promotion/seasonality factors, reorder point, and stockout risk |
-| **Auth & Security** | `auth.test.ts` | Password policy, employee IDs, JWT verification, role permissions, TOTP MFA, and email OTP |
+| **Auth & Security** | `auth.test.ts`, `botProtection.test.ts` | Password policy, employee IDs, session validation, role permissions, TOTP enrollment, email verification, and bot protection |
+| **API security and tenancy** | `server.test.ts`, `cors.test.ts`, `config/policies.test.ts`, `tenancy.test.ts`, and `admin-settings.test.ts` | Cookie sessions, CSRF, CORS, policy enforcement, company isolation, and administration behavior |
+| **End-to-end API behavior** | `e2e.test.ts` | Cross-route API workflows and regression coverage |
 | **Provider contracts** | `integrations.test.ts` | Default-deny payment authorization/refunds and full-amount validation |
 | **Observability** | `observability.test.ts` | Per-route request/error counts and average/p95 calculation |
 
@@ -792,8 +810,17 @@ Configure `Code/.env` or `backend/.env` (copy from `backend/.env.example`):
 | `DB_USER` | `postgres` | Database user |
 | `DB_PASSWORD` | *(required)* | Database password |
 | `DB_NAME` | `inventory_db` | PostgreSQL schema / database name |
+| `DB_SSL` | `false` outside production | Enable PostgreSQL TLS; required in production |
 | `JWT_SECRET` | *(required)* | HMAC-SHA256 signing key for session tokens |
+| `VITE_API_PROXY_TARGET` | `http://localhost:<PORT>` | Optional Vite API proxy override; the default target follows `PORT` |
 | `CORS_ORIGINS` | Local Vite origins in the example; empty if unset in production | Comma-separated browser origins allowed to call the API; set the deployed frontend origin in production |
+| `TRUST_PROXY_HOPS` | `0` | Number of trusted reverse-proxy hops; configure accurately so HTTPS detection and client IP rate limits use trusted proxy headers |
+| `ENFORCE_HTTPS` | Enabled in production | Set to `false` only for local tests; production requests must use HTTPS |
+| `SESSION_COOKIE_SECURE` | Enabled in production | Force the session cookie's Secure attribute outside production |
+| `TURNSTILE_SITE_KEY` | *(required in production)* | Cloudflare Turnstile site key, also set as `VITE_TURNSTILE_SITE_KEY` before building the frontend |
+| `TURNSTILE_SECRET_KEY` | *(required in production)* | Server-only Cloudflare Turnstile secret; never expose it to the frontend |
+| `TURNSTILE_ALLOWED_HOSTNAMES` | *(required in production)* | Comma-separated exact hostnames accepted from Cloudflare Siteverify |
+| `VITE_TURNSTILE_SITE_KEY` | *(unset in local development)* | Public Turnstile site key embedded in the frontend build; safe to expose |
 | `ADMIN_NAME` | `System Administrator` | Optional display name for first production admin bootstrap |
 | `ADMIN_EMAIL` | *(required for a new production database)* | Email for the initial production administrator |
 | `ADMIN_PASSWORD` | *(required for a new production database)* | Strong one-time password for initial administrator setup |
@@ -807,6 +834,10 @@ Configure `Code/.env` or `backend/.env` (copy from `backend/.env.example`):
 > [!CAUTION]
 > Never commit `backend/.env` to version control. It is listed in `.gitignore`. Use `backend/.env.example` as the template — it contains only placeholder values.
 > The backend will not start without `DB_PASSWORD` and `JWT_SECRET`; provide unique values through `Code/.env`, `backend/.env`, or the deployment environment. Process environment variables take precedence, followed by `Code/.env` and then `backend/.env`. A new production database also requires `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Set `CORS_ORIGINS` to the exact frontend origin(s) in production.
+>
+> Production also requires `DB_SSL=true`, valid PostgreSQL certificates, HTTPS at the trusted reverse proxy, and the correct `TRUST_PROXY_HOPS`. Do not set `ENFORCE_HTTPS=false` or disable certificate verification in production. Browser sessions use HttpOnly SameSite cookies and CSRF tokens; the in-memory rate-limit store is suitable only for a single API instance. Use a shared store before scaling horizontally.
+>
+> GitHub Actions scans repository history with Gitleaks and audits production dependencies with `npm audit --omit=dev --audit-level=high`; Dependabot checks npm dependencies and workflow actions weekly. Scanning does not rewrite Git history or revoke leaked credentials. If a scan finds a real credential, rotate/revoke it first and coordinate any history rewrite separately. No public database key is used or exposed. In production, Turnstile blocks sign-in, account lookup, and email-verification requests until valid site/secret keys and allowed hostnames are configured. Add `https://challenges.cloudflare.com` to the frontend host's script, frame, and connect CSP directives. Row-level security remains disabled until a non-owner database role and complete tenant-context coverage have been verified.
 
 ---
 

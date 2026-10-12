@@ -7,7 +7,17 @@ export type Supplier = {
   name: string;
   contact: string;
   leadTimeDays: number;
+  isArchived?: boolean;
 };
+
+export type NewSupplier = Pick<Supplier, 'name' | 'contact' | 'leadTimeDays'>;
+
+export class SupplierError extends Error {
+  constructor(message: string, public readonly statusCode: 400 | 409) {
+    super(message);
+    this.name = 'SupplierError';
+  }
+}
 
 export type PurchaseOrderStatus = 'DRAFT' | 'APPROVED' | 'SENT' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED';
 
@@ -128,12 +138,7 @@ export const hydrateSupplierReviews = (storedReviews: SupplierReview[]): void =>
   );
 };
 
-export const suppliers: Supplier[] = [
-  { id: 1, name: 'Fresh Foods Co.', contact: 'orders@freshfoods.co', leadTimeDays: 3 },
-  { id: 2, name: 'Bulk Supply Ltd.', contact: 'hello@bulksupply.co', leadTimeDays: 5 },
-  { id: 3, name: 'ElectroTech Wholesale', contact: 'sales@electrotech.local', leadTimeDays: 7 },
-  { id: 4, name: 'Metro Office & Apparel', contact: 'supply@metropack.local', leadTimeDays: 4 },
-];
+export const suppliers: Supplier[] = [];
 
 export const purchaseOrders: PurchaseOrder[] = [
   {
@@ -160,10 +165,77 @@ export const purchaseOrders: PurchaseOrder[] = [
   },
 ];
 
-for (const supplier of suppliers) supplier.companyId ??= DEFAULT_COMPANY_ID;
 for (const order of purchaseOrders) order.companyId ??= DEFAULT_COMPANY_ID;
 
 let purchaseOrderId = purchaseOrders.length + 1;
+
+export const hydrateSuppliers = (storedSuppliers: Supplier[]): void => {
+  suppliers.splice(
+    0,
+    suppliers.length,
+    ...storedSuppliers.map((supplier) => ({
+      ...supplier,
+      companyId: supplier.companyId ?? DEFAULT_COMPANY_ID,
+      isArchived: supplier.isArchived ?? false,
+    }))
+  );
+};
+
+export const validateNewSupplier = (input: Partial<Record<keyof NewSupplier, unknown>>): NewSupplier => {
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  const contact = typeof input.contact === 'string' ? input.contact.trim() : '';
+  const leadTimeDays = Number(input.leadTimeDays);
+
+  if (!name || !contact || input.leadTimeDays === undefined || input.leadTimeDays === null || input.leadTimeDays === '') {
+    throw new SupplierError('Supplier name, contact details, and lead time are required', 400);
+  }
+  if (name.length > 150 || contact.length > 255) {
+    throw new SupplierError('Supplier name must be 150 characters or fewer and contact details 255 characters or fewer', 400);
+  }
+  if (!Number.isInteger(leadTimeDays) || leadTimeDays < 1 || leadTimeDays > 365) {
+    throw new SupplierError('Lead time must be a whole number from 1 to 365 days', 400);
+  }
+  if (suppliers.some((supplier) =>
+    belongsToCompany(supplier.companyId) &&
+    (supplier.name.toLowerCase() === name.toLowerCase() || supplier.contact.toLowerCase() === contact.toLowerCase())
+  )) {
+    throw new SupplierError('A supplier with this name or contact already exists in this company', 409);
+  }
+
+  return { name, contact, leadTimeDays };
+};
+
+export const addSupplier = (supplier: Supplier): Supplier => {
+  const validated = validateNewSupplier(supplier);
+  const record = {
+    ...validated,
+    id: supplier.id,
+    companyId: supplier.companyId ?? currentCompanyId(),
+    isArchived: false,
+  };
+  suppliers.push(record);
+  return record;
+};
+
+export const getSupplierById = (id: number): Supplier | undefined =>
+  suppliers.find((supplier) => belongsToCompany(supplier.companyId) && supplier.id === id);
+
+export const getActiveSupplierById = (id: number): Supplier | undefined => {
+  const supplier = getSupplierById(id);
+  return supplier && !supplier.isArchived ? supplier : undefined;
+};
+
+export const setSupplierArchived = (id: number, isArchived: boolean): Supplier | undefined => {
+  const supplier = getSupplierById(id);
+  if (supplier) supplier.isArchived = isArchived;
+  return supplier;
+};
+
+export const removeSupplier = (id: number): Supplier | undefined => {
+  const index = suppliers.findIndex((supplier) => belongsToCompany(supplier.companyId) && supplier.id === id);
+  if (index === -1) return undefined;
+  return suppliers.splice(index, 1)[0];
+};
 
 const assertPositiveInteger = (quantity: number): void => {
   if (!Number.isInteger(quantity) || quantity <= 0) {
@@ -171,13 +243,9 @@ const assertPositiveInteger = (quantity: number): void => {
   }
 };
 
-const getSupplierById = (supplierId: number): Supplier => {
-  return suppliers.find((supplier) => belongsToCompany(supplier.companyId) && supplier.id === supplierId) || suppliers.find((supplier) => belongsToCompany(supplier.companyId)) || suppliers[0];
-};
-
 const toPurchaseOrderView = (order: PurchaseOrder): PurchaseOrderView => ({
   ...order,
-  supplierName: getSupplierById(order.supplierId)?.name ?? 'Primary Supplier',
+  supplierName: getSupplierById(order.supplierId)?.name ?? `Unregistered supplier #${order.supplierId}`,
   remainingQuantity: order.quantity - order.receivedQuantity,
   supplierReview: reviewForPurchaseOrder(order.id),
   canReviewSupplier: order.status === 'RECEIVED' && !reviewForPurchaseOrder(order.id),
@@ -206,7 +274,10 @@ export const createPurchaseOrder = (
 ): PurchaseOrderView => {
   assertPositiveInteger(quantity);
 
-  const supplier = getSupplierById(supplierId);
+  const supplier = getActiveSupplierById(supplierId);
+  if (!supplier) {
+    throw new Error('Choose an active supplier that is registered with this company');
+  }
   const normalizedSku = sku.trim().toUpperCase();
   if (!normalizedSku || !itemName.trim()) {
     throw new Error('SKU and item name are required');
@@ -233,6 +304,9 @@ export const generateLowStockPurchaseOrders = (): PurchaseOrderView[] => {
   const generated: PurchaseOrderView[] = [];
 
   for (const product of getLowStockProducts()) {
+    const supplier = getActiveSupplierById(product.supplierId);
+    if (!supplier) continue;
+
     const hasOpenOrder = purchaseOrders.some(
       (order) =>
         order.sku === product.sku &&
@@ -248,7 +322,7 @@ export const generateLowStockPurchaseOrders = (): PurchaseOrderView[] => {
     const suggestedQuantity = Math.max(targetStock - product.availableStock, product.reorderQuantity);
 
     generated.push(
-      createPurchaseOrder(product.supplierId || 1, product.sku, product.name, suggestedQuantity, 'Generated from low-stock alert')
+      createPurchaseOrder(supplier.id, product.sku, product.name, suggestedQuantity, 'Generated from low-stock alert')
     );
   }
 

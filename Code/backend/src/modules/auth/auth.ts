@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import bcrypt from 'bcryptjs';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import { loadEnvironment } from '../../config/environment';
 import { getCurrentPolicy, isPolicyEnforced } from '../../config/policies';
@@ -180,10 +180,21 @@ export const toPublicUser = (user: User): PublicUser => {
 
 export const demoAccounts = (): PublicUser[] => users.map(toPublicUser);
 
+const findUserByIdentifier = (identifier: string, companyId?: string): User | undefined => {
+  const clean = identifier.trim().toLowerCase();
+  const matches = users.filter((user) => (
+    (!companyId || user.companyId === companyId)
+    && (clean.includes('@') ? user.email.toLowerCase() === clean : user.employeeId.toLowerCase() === clean)
+  ));
+  return matches.length === 1 ? matches[0] : undefined;
+};
+
+const emailVerificationKey = (user: User): string => `${user.companyId}:${user.email.toLowerCase()}`;
+
 export const getUsersByRole = (role: UserRole): PublicUser[] =>
   users.filter((u) => u.role === role).map(toPublicUser);
 
-// OTP Verification In-Memory Store: email/employeeId -> { code, expiresAt }
+// OTP codes are keyed by email so duplicate employee IDs cannot share verification state.
 const emailVerificationStore = new Map<string, { code: string; expiresAt: number }>();
 
 const getJwtSecret = (): string => {
@@ -204,7 +215,7 @@ const mailer = smtpConfigured
   })
   : null;
 
-export const generateToken = (user: PublicUser): string => {
+export const generateToken = (user: PublicUser, csrfToken?: string): string => {
   return jwt.sign(
     {
       id: user.id,
@@ -218,6 +229,7 @@ export const generateToken = (user: PublicUser): string => {
       sector: user.sector,
       isFirstLogin: user.isFirstLogin,
       emailVerified: user.emailVerified,
+      ...(csrfToken ? { csrfToken } : {}),
     },
     getJwtSecret(),
     {
@@ -239,12 +251,14 @@ export const verifyToken = (token: string) => {
     sector: EmployeeSector;
     isFirstLogin: boolean;
     emailVerified: boolean;
+    csrfToken?: string;
   };
 };
 
-export const enrollMfa = (identifier: string): { secret: string; uri: string; user: PublicUser } | undefined => {
+export const enrollMfa = (identifier: string, companyId?: string): { secret: string; uri: string; user: PublicUser } | undefined => {
   const clean = identifier.trim().toLowerCase();
-  const user = users.find((entry) => entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean);
+  const user = users.find((entry) => (!companyId || entry.companyId === companyId)
+    && (entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean));
   if (!user) return undefined;
   const secret = generateSecret();
   user.mfaSecret = secret;
@@ -252,9 +266,10 @@ export const enrollMfa = (identifier: string): { secret: string; uri: string; us
   return { secret, uri: generateURI({ issuer: 'SyncStock', label: user.email, secret }), user: toPublicUser(user) };
 };
 
-export const verifyMfa = (identifier: string, code: string): User | undefined => {
+export const verifyMfa = (identifier: string, code: string, companyId?: string): User | undefined => {
   const clean = identifier.trim().toLowerCase();
-  const user = users.find((entry) => entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean);
+  const user = users.find((entry) => (!companyId || entry.companyId === companyId)
+    && (entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean));
   if (!user?.mfaSecret || !/^\d{6}$/.test(code.trim())) return undefined;
   const result = verifySync({ token: code.trim(), secret: user.mfaSecret });
   if (!result.valid) return undefined;
@@ -267,8 +282,7 @@ export const authenticateUser = (
   passwordAttempt: string,
   companyId?: string
 ): User | undefined => {
-  const clean = identifier.trim().toLowerCase();
-  const user = users.find((u) => (!companyId || u.companyId === companyId) && (u.employeeId.toLowerCase() === clean || u.email.toLowerCase() === clean));
+  const user = findUserByIdentifier(identifier, companyId);
 
   const passwordMatches = user?.passwordHash
     ? bcrypt.compareSync(passwordAttempt, user.passwordHash)
@@ -324,7 +338,7 @@ export const validatePasswordStrength = (password: string): { isValid: boolean; 
   };
 };
 
-export const generateEmployeeId = (sector: EmployeeSector): string => {
+export const generateEmployeeId = (sector: EmployeeSector, companyId = DEFAULT_COMPANY_ID): string => {
   const prefixMap: Record<EmployeeSector, string> = {
     'Store Management': 'MGR',
     'Cashier & Front-of-House': 'CSH',
@@ -334,8 +348,11 @@ export const generateEmployeeId = (sector: EmployeeSector): string => {
   };
 
   const prefix = prefixMap[sector] || 'STF';
-  const sectorCount = users.filter((u) => u.sector === sector).length + 1;
-  return `${prefix}-${String(sectorCount).padStart(3, '0')}`;
+  const usedIds = new Set(users.filter((user) => user.companyId === companyId).map((user) => user.employeeId.toUpperCase()));
+  const employeeIdPattern = new RegExp(`^${prefix}-(\\d+)$`, 'i');
+  let nextId = Math.max(0, ...[...usedIds].map((employeeId) => Number(employeeId.match(employeeIdPattern)?.[1] || 0))) + 1;
+  while (usedIds.has(`${prefix}-${String(nextId).padStart(3, '0')}`)) nextId += 1;
+  return `${prefix}-${String(nextId).padStart(3, '0')}`;
 };
 
 export const registerEmployee = (params: {
@@ -354,7 +371,7 @@ export const registerEmployee = (params: {
   }
 
   const generatedPassword = params.tempPassword || `Sync#${Math.floor(100000 + Math.random() * 900000)}!`;
-  const employeeId = generateEmployeeId(params.sector);
+  const employeeId = generateEmployeeId(params.sector, companyId);
 
   const newUser: User = {
     id: users.length + 1,
@@ -387,16 +404,15 @@ export const registerEmployee = (params: {
 
 export const setFirstPassword = (
   identifier: string,
-  newPassword: string
+  newPassword: string,
+  companyId?: string
 ): { success: boolean; user?: PublicUser; error?: string } => {
   const validation = validatePasswordStrength(newPassword);
   if (!validation.isValid) {
     return { success: false, error: validation.errors.join(', ') };
   }
 
-  const user = users.find(
-    (u) => u.employeeId.toUpperCase() === identifier.trim().toUpperCase() || u.email.toLowerCase() === identifier.trim().toLowerCase()
-  );
+  const user = findUserByIdentifier(identifier, companyId);
 
   if (!user) {
     return { success: false, error: 'Employee account not found' };
@@ -423,35 +439,20 @@ export const setFirstPassword = (
 
 // Generate & Dispatch Email Verification Code (OTP)
 export const sendEmailVerificationCode = (
-  identifier: string
+  identifier: string,
+  companyId?: string
 ): { success: boolean; email?: string; code?: string; expiresAt?: string; error?: string } => {
-  const clean = identifier.trim().toLowerCase();
-  const user = users.find((u) => u.employeeId.toLowerCase() === clean || u.email.toLowerCase() === clean);
+  const user = findUserByIdentifier(identifier, companyId);
 
   if (!user) {
     return { success: false, error: `Employee not found for identifier "${identifier}"` };
   }
 
   // Generate 6-digit numeric verification code
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const code = String(randomInt(100000, 1000000));
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
 
-  emailVerificationStore.set(user.email.toLowerCase(), { code, expiresAt });
-  emailVerificationStore.set(user.employeeId.toLowerCase(), { code, expiresAt });
-
-  console.log(`\n📧 [EMAIL DISPATCH SIMULATOR] =============================`);
-  console.log(`To: ${user.name} <${user.email}>`);
-  console.log(`Subject: SyncStock Security: Your Verification Code`);
-  console.log(`Code: ${code} (Expires in 10 minutes)`);
-  console.log(`===========================================================\n`);
-
-  logSecurityEvent(
-    'EMAIL_CODE_SENT',
-    'system',
-    'SYSTEM',
-    `Sent 6-digit email confirmation code to ${user.email} (${user.employeeId})`,
-    user.employeeId
-  );
+  emailVerificationStore.set(emailVerificationKey(user), { code, expiresAt });
 
   return {
     success: true,
@@ -461,13 +462,21 @@ export const sendEmailVerificationCode = (
   };
 };
 
-export const dispatchEmailVerificationCode = async (identifier: string, code: string): Promise<void> => {
+export const isEmailDeliveryConfigured = (): boolean => mailer !== null;
+
+export const clearEmailVerificationCode = (identifier: string, companyId?: string): void => {
+  const user = findUserByIdentifier(identifier, companyId);
+  if (user) {
+    emailVerificationStore.delete(emailVerificationKey(user));
+  }
+};
+
+export const dispatchEmailVerificationCode = async (identifier: string, code: string, companyId?: string): Promise<void> => {
   if (!mailer) {
-    return;
+    throw new Error('Email delivery is not configured');
   }
 
-  const clean = identifier.trim().toLowerCase();
-  const user = users.find((entry) => entry.employeeId.toLowerCase() === clean || entry.email.toLowerCase() === clean);
+  const user = findUserByIdentifier(identifier, companyId);
   if (!user) {
     throw new Error('Employee not found');
   }
@@ -478,28 +487,37 @@ export const dispatchEmailVerificationCode = async (identifier: string, code: st
     subject: 'SyncStock email verification code',
     text: `Your SyncStock verification code is ${code}. It expires in 10 minutes and can only be used once.`,
   });
+
+  logSecurityEvent(
+    'EMAIL_CODE_SENT',
+    'system',
+    'SYSTEM',
+    `Sent 6-digit email confirmation code to ${user.email} (${user.employeeId})`,
+    user.employeeId
+  );
 };
 
 // Validate 6-Digit Email Verification Code
 export const verifyEmailCode = (
   identifier: string,
-  code: string
+  code: string,
+  companyId?: string
 ): { success: boolean; user?: PublicUser; error?: string } => {
-  const clean = identifier.trim().toLowerCase();
-  const user = users.find((u) => u.employeeId.toLowerCase() === clean || u.email.toLowerCase() === clean);
+  const user = findUserByIdentifier(identifier, companyId);
 
   if (!user) {
     return { success: false, error: 'Employee not found' };
   }
 
-  const stored = emailVerificationStore.get(user.email.toLowerCase()) || emailVerificationStore.get(user.employeeId.toLowerCase());
+  const verificationKey = emailVerificationKey(user);
+  const stored = emailVerificationStore.get(verificationKey);
 
   if (!stored) {
     return { success: false, error: 'No verification code was requested or code has expired. Please send a new code.' };
   }
 
   if (Date.now() > stored.expiresAt) {
-    emailVerificationStore.delete(user.email.toLowerCase());
+    emailVerificationStore.delete(verificationKey);
     return { success: false, error: 'Verification code has expired. Please request a new code.' };
   }
 
@@ -509,8 +527,7 @@ export const verifyEmailCode = (
 
   // Mark as verified
   user.emailVerified = true;
-  emailVerificationStore.delete(user.email.toLowerCase());
-  emailVerificationStore.delete(user.employeeId.toLowerCase());
+  emailVerificationStore.delete(verificationKey);
 
   logSecurityEvent(
     'EMAIL_VERIFIED',

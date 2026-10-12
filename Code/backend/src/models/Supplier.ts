@@ -9,9 +9,10 @@ export interface SupplierAttributes {
   contact: string;
   leadTimeDays: number;
   rating: number;
+  isArchived: boolean;
 }
 
-export type SupplierCreationAttributes = Optional<SupplierAttributes, 'id'>;
+export type SupplierCreationAttributes = Optional<SupplierAttributes, 'id' | 'rating' | 'isArchived'>;
 
 export class SupplierModel extends Model<SupplierAttributes, SupplierCreationAttributes> implements SupplierAttributes {
   public id!: number;
@@ -20,6 +21,7 @@ export class SupplierModel extends Model<SupplierAttributes, SupplierCreationAtt
   public contact!: string;
   public leadTimeDays!: number;
   public rating!: number;
+  public isArchived!: boolean;
 }
 
 SupplierModel.init(
@@ -41,12 +43,16 @@ SupplierModel.init(
     leadTimeDays: {
       type: DataTypes.INTEGER,
       allowNull: false,
-      defaultValue: 3,
     },
     rating: {
       type: DataTypes.FLOAT,
       allowNull: false,
-      defaultValue: 4.5,
+      defaultValue: 0,
+    },
+    isArchived: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
     },
   },
   {
@@ -56,14 +62,12 @@ SupplierModel.init(
   },
 );
 
-export const seedSuppliers = async (): Promise<void> => {
-  const count = await SupplierModel.count();
-  if (count > 0) {
-    return;
+export const removeSampleSuppliers = async (): Promise<void> => {
+  const samples = [
+    ['Fresh Foods Co.', 'orders@freshfoods.co'],
+    ['Bulk Supply Ltd.', 'hello@bulksupply.co'],
+  ];
+  for (const [name, contact] of samples) {
+    await SupplierModel.destroy({ where: { companyId: 'company-default', name, contact } });
   }
-
-  await SupplierModel.bulkCreate([
-    { name: 'Fresh Foods Co.', contact: 'orders@freshfoods.co', leadTimeDays: 3, rating: 4.8 },
-    { name: 'Bulk Supply Ltd.', contact: 'hello@bulksupply.co', leadTimeDays: 5, rating: 4.6 },
-  ]);
 };

@@ -1,4 +1,4 @@
-import { Transaction } from 'sequelize';
+import { Op, Transaction } from 'sequelize';
 import { sequelize } from './config/sequelize';
 import {
   CustomerOrderItemModel,
@@ -16,14 +16,17 @@ import {
   SaleModel,
   UserModel,
   WarehouseModel,
+  CompanyModel,
   CompanyPolicyModel,
+  type CompanyAttributes,
 } from './models/DomainModels';
 import { ProductModel } from './models/Product';
+import { SupplierModel } from './models/Supplier';
 import { StockMovementModel } from './models/StockMovement';
 import { inventoryItems, stockMovements, type CustomerOrder, type CycleCountEntry, type SaleReceipt, type StockMovement } from './inventory';
-import type { PurchaseOrderView, SupplierReview } from './modules/procurement/procurement';
+import type { NewSupplier, PurchaseOrderView, Supplier, SupplierReview } from './modules/procurement/procurement';
 import type { PublicUser, User } from './modules/auth/auth';
-import { currentCompanyId } from './config/tenancy';
+import { currentCompanyId, DEFAULT_COMPANY_ID, type CompanyStatus } from './config/tenancy';
 import type { SystemPolicy } from './config/policies';
 
 let databaseReady = false;
@@ -34,7 +37,110 @@ export const setDatabaseReady = (ready: boolean): void => {
 
 export const isDatabaseReady = (): boolean => databaseReady;
 
+const requireDatabase = (operation: string): void => {
+  if (!databaseReady) throw new Error(`PostgreSQL is unavailable; ${operation} cannot be saved.`);
+};
+
+export const persistSupplier = async (supplier: NewSupplier, productIds: number[] = []): Promise<Supplier> => {
+  requireDatabase('Supplier');
+  const record = await withDatabase(async (transaction) => {
+    const createdSupplier = await SupplierModel.create(
+      {
+        ...supplier,
+        companyId: currentCompanyId(),
+        rating: 0,
+        isArchived: false,
+      },
+      { transaction }
+    );
+    if (productIds.length > 0) {
+      const [updatedCount] = await ProductModel.update(
+        { supplierId: createdSupplier.id },
+        { where: { id: { [Op.in]: productIds }, companyId: currentCompanyId() }, transaction }
+      );
+      if (updatedCount !== productIds.length) {
+        throw new Error('One or more selected products could not be assigned to the supplier.');
+      }
+    }
+    return createdSupplier;
+  });
+  if (!record) throw new Error('Supplier was not saved to PostgreSQL.');
+  return {
+    id: record.id,
+    companyId: record.companyId,
+    name: record.name,
+    contact: record.contact,
+    leadTimeDays: record.leadTimeDays,
+    isArchived: record.isArchived,
+  };
+};
+
+export const persistSupplierArchivedStatus = async (id: number, isArchived: boolean): Promise<boolean> => {
+  requireDatabase('Supplier archive status');
+  const updated = await withDatabase(async (transaction) => {
+    const [updatedCount] = await SupplierModel.update(
+      { isArchived },
+      { where: { id, companyId: currentCompanyId() }, transaction }
+    );
+    return updatedCount === 1;
+  });
+  return updated ?? false;
+};
+
+export const deletePersistedSupplier = async (
+  id: number,
+): Promise<{ found: boolean; deleted: boolean; productCount: number; purchaseOrderCount: number }> => {
+  requireDatabase('Supplier deletion');
+  const result = await withDatabase(async (transaction) => {
+    const supplier = await SupplierModel.findOne({
+      where: { id, companyId: currentCompanyId() },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!supplier) return { found: false, deleted: false, productCount: 0, purchaseOrderCount: 0 };
+
+    const [productCount, purchaseOrderCount] = await Promise.all([
+      ProductModel.count({ where: { supplierId: id, companyId: currentCompanyId() }, transaction }),
+      PurchaseOrderModel.count({ where: { supplierId: id, companyId: currentCompanyId() }, transaction }),
+    ]);
+    if (productCount > 0 || purchaseOrderCount > 0) {
+      return { found: true, deleted: false, productCount, purchaseOrderCount };
+    }
+
+    await supplier.destroy({ transaction });
+    return { found: true, deleted: true, productCount, purchaseOrderCount };
+  });
+  if (!result) throw new Error('Supplier deletion did not complete.');
+  return result;
+};
+
+export const persistCompanyProfile = async (
+  companyId: string,
+  changes: Partial<Pick<CompanyAttributes, 'legalName' | 'tradingName' | 'registrationNumber' | 'taxNumber' | 'currency' | 'timezone'>>,
+): Promise<void> => {
+  requireDatabase('Company profile changes');
+  if (companyId !== currentCompanyId()) throw new Error('Company profile changes must stay within the current company.');
+  await withDatabase(async (transaction) => {
+    const [updatedCount] = await CompanyModel.update(changes, { where: { id: companyId }, transaction });
+    if (updatedCount !== 1) throw new Error('Company profile was not found in PostgreSQL.');
+  });
+};
+
+export const persistCompanyStatus = async (companyId: string, subscriptionStatus: CompanyStatus): Promise<void> => {
+  requireDatabase('Company status changes');
+  if (companyId === DEFAULT_COMPANY_ID) throw new Error('The default company cannot be archived.');
+  await withDatabase(async (transaction) => {
+    const [updatedCount] = await CompanyModel.update(
+      { subscriptionStatus },
+      { where: { id: companyId }, transaction }
+    );
+    if (updatedCount !== 1) throw new Error('Company was not found in PostgreSQL.');
+  });
+};
+
 export const persistCompanyPolicy = async (companyId: string, policy: SystemPolicy): Promise<void> => {
+  requireDatabase('Policy changes');
+  if (companyId !== currentCompanyId()) throw new Error('Policy changes must stay within the current company.');
   await withDatabase(async (transaction) => {
     await CompanyPolicyModel.upsert({ companyId, configuration: policy }, { transaction });
   });
@@ -52,28 +158,33 @@ const withDatabase = async <T>(operation: (transaction: Transaction) => Promise<
 };
 
 export const persistUser = async (user: User, passwordHash: string): Promise<void> => {
-  await withDatabase(async (transaction) => {
-    await UserModel.upsert(
-      {
-        id: user.id,
-        companyId: user.companyId,
-        isPlatformAdmin: user.isPlatformAdmin,
-        employeeId: user.employeeId,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        sector: user.sector,
-        status: user.status,
-        isFirstLogin: user.isFirstLogin,
-        mfaEnabled: user.mfaEnabled,
-        emailVerified: user.emailVerified,
-        mfaSecret: user.mfaSecret,
-        passwordHash,
-        lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
-      },
-      { transaction }
-    );
-  });
+  try {
+    await withDatabase(async (transaction) => {
+      await UserModel.upsert(
+        {
+          id: user.id,
+          companyId: user.companyId,
+          isPlatformAdmin: user.isPlatformAdmin,
+          employeeId: user.employeeId,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          sector: user.sector,
+          status: user.status,
+          isFirstLogin: user.isFirstLogin,
+          mfaEnabled: user.mfaEnabled,
+          emailVerified: user.emailVerified,
+          mfaSecret: user.mfaSecret,
+          passwordHash,
+          lastLoginAt: user.lastLoginAt ? new Date(user.lastLoginAt) : undefined,
+        },
+        { transaction }
+      );
+    });
+  } finally {
+    user.passwordHash = passwordHash;
+    user.password = undefined;
+  }
 };
 
 const persistMovement = async (movement: StockMovement, transaction: Transaction): Promise<void> => {
@@ -241,8 +352,23 @@ export const persistProduct = async (product: {
   isActive: boolean;
 }): Promise<void> => {
   await withDatabase(async (transaction) => {
+    const companyId = product.companyId ?? currentCompanyId();
+    const existingProduct = await ProductModel.findOne({
+      where: { id: product.id, companyId },
+      transaction,
+    });
+    if (!existingProduct || existingProduct.supplierId !== product.supplierId) {
+      const supplier = await SupplierModel.findOne({
+        where: { id: product.supplierId, companyId },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!supplier || supplier.isArchived) {
+        throw new Error('Products must be assigned to an active supplier in the current company.');
+      }
+    }
     await ProductModel.upsert({
-      companyId: product.companyId ?? currentCompanyId(),
+      companyId,
       id: product.id,
       sku: product.sku,
       barcode: product.barcode,
@@ -265,9 +391,9 @@ export const persistProduct = async (product: {
   });
 };
 
-export const persistUserVerification = async (employeeId: string): Promise<void> => {
+export const persistUserVerification = async (userId: number, companyId: string): Promise<void> => {
   await withDatabase(async (transaction) => {
-    await UserModel.update({ emailVerified: true }, { where: { employeeId, companyId: currentCompanyId() }, transaction });
+    await UserModel.update({ emailVerified: true }, { where: { id: userId, companyId }, transaction });
   });
 };
 
@@ -288,6 +414,18 @@ export const persistUserState = async (user: User): Promise<void> => {
       },
       { where: { id: user.id, companyId: user.companyId }, transaction }
     );
+  });
+};
+
+export const persistMfaState = async (user: User): Promise<void> => {
+  requireDatabase('MFA enrollment changes');
+  if (user.companyId !== currentCompanyId()) throw new Error('MFA changes must stay within the current company.');
+  await withDatabase(async (transaction) => {
+    const [updatedCount] = await UserModel.update(
+      { mfaEnabled: user.mfaEnabled, mfaSecret: user.mfaSecret },
+      { where: { id: user.id, companyId: user.companyId }, transaction }
+    );
+    if (updatedCount !== 1) throw new Error('MFA account was not found in PostgreSQL.');
   });
 };
 
@@ -364,11 +502,26 @@ export const deleteWarehouse = async (id: string): Promise<void> => {
 
 export const persistPurchaseOrder = async (order: PurchaseOrderView): Promise<void> => {
   await withDatabase(async (transaction) => {
+    const companyId = order.companyId ?? currentCompanyId();
+    const existingOrder = await PurchaseOrderModel.findOne({
+      where: { id: order.id, companyId },
+      transaction,
+    });
+    if (!existingOrder) {
+      const supplier = await SupplierModel.findOne({
+        where: { id: order.supplierId, companyId },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!supplier || supplier.isArchived) {
+        throw new Error('Purchase orders must use an active supplier in the current company.');
+      }
+    }
     const [record] = await PurchaseOrderModel.findOrCreate({
-      where: { id: order.id, companyId: order.companyId ?? currentCompanyId() },
+      where: { id: order.id, companyId },
       defaults: {
         id: order.id,
-        companyId: order.companyId ?? currentCompanyId(),
+        companyId,
         supplierId: order.supplierId,
         status: order.status,
         totalQuantity: order.quantity,
@@ -394,10 +547,10 @@ export const persistPurchaseOrder = async (order: PurchaseOrderView): Promise<vo
       { transaction }
     );
     await PurchaseOrderItemModel.findOrCreate({
-      where: { purchaseOrderId: record.id, companyId: order.companyId ?? currentCompanyId() },
+      where: { purchaseOrderId: record.id, companyId },
       defaults: {
         purchaseOrderId: record.id,
-        companyId: order.companyId ?? currentCompanyId(),
+        companyId,
         sku: order.sku,
         itemName: order.itemName,
         quantity: order.quantity,

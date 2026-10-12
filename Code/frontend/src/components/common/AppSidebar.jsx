@@ -9,7 +9,7 @@ const roleMenus = {
     ],
   },
   PROCUREMENT_STAFF: {
-    sections: [{ label: 'Workspace', items: [['overview', 'Overview', 'trending-up'], ['forecasting', 'Forecasting', 'clipboard-list'], ['suppliers', 'Purchase orders', 'truck'], ['supplier-ratings', 'Supplier ratings', 'check-circle'], ['catalog', 'Inventory', 'box']] }],
+    sections: [{ label: 'Procurement', items: [['forecasting', 'Forecasting', 'clipboard-list'], ['suppliers', 'Purchase orders', 'truck'], ['supplier-ratings', 'Supplier ratings', 'check-circle']] }],
   },
   WAREHOUSE_STAFF: {
     sections: [{ label: 'Warehouse', items: [['receiving', 'Receiving', 'truck'], ['cycle-count', 'Cycle counts', 'clipboard-list'], ['adjustments', 'Adjustments', 'box'], ['fulfillment', 'Fulfillment', 'shopping-cart']] }],

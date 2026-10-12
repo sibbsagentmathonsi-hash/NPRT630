@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 
@@ -32,11 +33,13 @@ import { connectDatabase } from './config/database';
 import { CompanyModel } from './models/DomainModels';
 import {
   authenticateUser,
+  clearEmailVerificationCode,
   demoAccounts,
   dispatchEmailVerificationCode,
   enrollMfa,
   generateToken,
   getUsersByRole,
+  isEmailDeliveryConfigured,
   logSecurityEvent,
   registerEmployee,
   setSecurityAuditWriter,
@@ -52,25 +55,44 @@ import {
   verifyToken,
   permissionsForRole,
 } from './modules/auth/auth';
+import { requireTurnstile } from './modules/auth/botProtection';
 import {
   approvePurchaseOrder,
   cancelPurchaseOrder,
   createPurchaseOrder,
   generateLowStockPurchaseOrders,
   getPurchaseOrders,
+  getActiveSupplierById,
+  getSupplierById,
   getSupplierPerformance,
+  addSupplier,
+  removeSupplier,
+  setSupplierArchived,
   addSupplierReview,
+  SupplierError,
   receivePurchaseOrder,
   sendPurchaseOrder,
   SupplierReviewError,
+  validateNewSupplier,
   validateSupplierReview,
 } from './modules/procurement/procurement';
 import { calculateForecast, calculateForecasts } from './modules/forecasting/forecasting';
 import { loadEnvironment } from './config/environment';
-import { getCurrentPolicy, isPolicyEnforced, updateSystemPolicy } from './config/policies';
-import { belongsToCompany, companies, createCompany, getCompany, runInCompany } from './config/tenancy';
+import { getCurrentPolicy, isPolicyEnforced, setCurrentPolicy, updateSystemPolicy } from './config/policies';
+import { belongsToCompany, companies, createCompany, currentCompanyId, getCompany, runInCompany } from './config/tenancy';
 import { authorizeElectronicPayment, refundElectronicPayment, voidElectronicPayment, type ElectronicPaymentMethod } from './modules/integrations/contracts';
 import { getRequestMetrics, requestMetricsMiddleware } from './observability';
+import {
+  clearSessionCookie,
+  createCsrfToken,
+  CSRF_HEADER_NAME,
+  isValidCsrfToken,
+  loginRateLimiter,
+  readCookie,
+  SESSION_COOKIE_NAME,
+  setSessionCookie,
+  verificationRateLimiter,
+} from './security';
 import {
   persistCustomerOrder,
   persistCustomerOrderStatus,
@@ -84,9 +106,13 @@ import {
   persistStockAdjustment,
   persistReturn,
   persistSale,
+  persistSupplier,
+  persistSupplierArchivedStatus,
+  deletePersistedSupplier,
   persistSupplierReview,
   persistUser,
   persistUserState,
+  persistMfaState,
   removeUser,
   saveWarehouse,
   deleteWarehouse,
@@ -94,30 +120,75 @@ import {
   isDatabaseReady,
   setDatabaseReady,
   persistCompanyPolicy,
+  persistCompanyProfile,
+  persistCompanyStatus,
 } from './persistence';
 
 loadEnvironment();
 
 export const app = express();
 const preferredPort = Number(process.env.PORT ?? 4000);
+const trustedProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+if (!Number.isInteger(trustedProxyHops) || trustedProxyHops < 0) {
+  throw new Error('TRUST_PROXY_HOPS must be a non-negative integer.');
+}
+app.set('trust proxy', trustedProxyHops);
 
 const configuredCorsOrigins = process.env.CORS_ORIGINS
   ?.split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
 const allowedCorsOrigins = configuredCorsOrigins
-  ?? (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:5175', 'http://127.0.0.1:5175']);
+  ?? (process.env.NODE_ENV === 'production'
+    ? []
+    : ['http://localhost:5175', 'http://127.0.0.1:5175', 'http://localhost:5176', 'http://127.0.0.1:5176']);
 
 app.use(cors({
   origin: (origin, callback) => {
     callback(null, !origin || allowedCorsOrigins.includes(origin));
   },
+  credentials: true,
 }));
-app.use(express.json());
+app.use((req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  const origin = req.get('origin');
+  if (origin && !allowedCorsOrigins.includes(origin)) {
+    return res.status(403).json({ error: 'Request origin is not allowed.' });
+  }
+  return next();
+});
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  hsts: process.env.NODE_ENV === 'production'
+    ? { maxAge: 15552000, includeSubDomains: true }
+    : false,
+  referrerPolicy: { policy: 'no-referrer' },
+}));
+app.use((req, res, next) => {
+  if (
+    process.env.NODE_ENV === 'production'
+    && process.env.ENFORCE_HTTPS !== 'false'
+    && req.method !== 'OPTIONS'
+    && !req.secure
+  ) {
+    return res.status(426).json({ error: 'HTTPS is required.' });
+  }
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+  return next();
+});
+app.use(express.json({ limit: '1mb' }));
 app.use(requestMetricsMiddleware);
 app.use((req: any, _res, next) => {
   const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : readCookie(req, SESSION_COOKIE_NAME);
   if (!token) return next();
   try {
     const payload = verifyToken(token) as TokenPayload;
@@ -138,6 +209,7 @@ type TokenPayload = {
   role: UserRole;
   sector: EmployeeSector;
   isFirstLogin: boolean;
+  csrfToken?: string;
 };
 
 const roleCanAccess = (role: UserRole, allowedRoles: UserRole[]): boolean => {
@@ -154,7 +226,9 @@ const roleCanAccess = (role: UserRole, allowedRoles: UserRole[]): boolean => {
 
 const authorize = (...allowedRoles: UserRole[]) => (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const cookieToken = readCookie(req, SESSION_COOKIE_NAME);
+  const token = bearerToken || cookieToken;
 
   if (!token) {
     return res.status(401).json({ error: 'Missing bearer token' });
@@ -163,6 +237,10 @@ const authorize = (...allowedRoles: UserRole[]) => (req: any, res: any, next: an
   try {
     const payload = verifyToken(token) as TokenPayload;
 
+    if (!bearerToken && req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS'
+      && !isValidCsrfToken(payload.csrfToken, req.headers[CSRF_HEADER_NAME])) {
+      return res.status(403).json({ error: 'A valid CSRF token is required for this request.' });
+    }
     if (!payload.companyId || !getCompany(payload.companyId) || getCompany(payload.companyId)?.subscriptionStatus !== 'ACTIVE') {
       return res.status(403).json({ error: 'Company access is inactive or unavailable' });
     }
@@ -170,6 +248,19 @@ const authorize = (...allowedRoles: UserRole[]) => (req: any, res: any, next: an
 
     if (!roleCanAccess(payload.role, allowedRoles)) {
       return res.status(403).json({ error: 'Insufficient permissions for this operation' });
+    }
+
+    if (
+      payload.role === 'ADMIN'
+      && isPolicyEnforced('mfa-enrollment', payload.companyId)
+      && !users.some((user) => user.id === payload.id && user.companyId === payload.companyId && user.mfaEnabled)
+      && req.path !== '/api/auth/mfa/enroll'
+      && req.path !== '/api/auth/verify-mfa'
+      && req.path !== '/api/auth/session'
+      && req.path !== '/api/auth/logout'
+      && !(req.method === 'GET' && req.path === '/api/admin/policies')
+    ) {
+      return res.status(403).json({ error: 'MFA enrollment is required by the active company policy', code: 'MFA_ENROLLMENT_REQUIRED' });
     }
 
     req.user = payload;
@@ -188,6 +279,14 @@ const authorizePlatformAdmin = (req: any, res: any, next: any) => authorize('ADM
   req.user.isPlatformAdmin = true;
   return next();
 });
+
+const issueSessionCookie = (res: any, user: ReturnType<typeof toPublicUser>): string => {
+  const csrfToken = createCsrfToken();
+  const token = generateToken(user, csrfToken);
+  const maxAgeSeconds = getCurrentPolicy(user.companyId).sessionDurationHours * 60 * 60;
+  setSessionCookie(res, token, maxAgeSeconds);
+  return csrfToken;
+};
 
 const handleDomainError = (res: any, error: unknown, fallback: string): any => {
   const message = error instanceof Error ? error.message : fallback;
@@ -215,6 +314,10 @@ const inventoryPayload = () => ({
   categories,
   vatRate: getCurrentPolicy().vatRate,
   policyControls: getCurrentPolicy().controls,
+  companySettings: (() => {
+    const company = getCompany(currentCompanyId());
+    return { currency: company?.currency ?? 'ZAR', timezone: company?.timezone ?? 'Africa/Johannesburg' };
+  })(),
   summary: getDashboardSummary(),
   lowStockProducts: getLowStockProducts(),
   movements: stockMovements.filter((movement) => belongsToCompany(movement.companyId)).slice(0, 50),
@@ -299,7 +402,7 @@ app.get('/api/auth/demo-accounts', (_req, res) => {
 // ==========================================
 
 // Email-first access check. Only a safe public account summary is returned.
-app.post('/api/auth/lookup-email', (req, res) => {
+app.post('/api/auth/lookup-email', loginRateLimiter, requireTurnstile('auth'), (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const requestedCompanyId = req.body?.companyId ? String(req.body.companyId) : undefined;
   if (!email || !email.includes('@')) {
@@ -327,7 +430,7 @@ app.get('/api/auth/policy', (req, res) => {
 });
 
 // Universal & Worker Login (accepts Employee ID or Email)
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', loginRateLimiter, requireTurnstile('auth'), (req, res) => {
   const { email, employeeId, identifier: rawId, password, companyId } = req.body ?? {};
   const identifier = employeeId || email || rawId;
 
@@ -341,74 +444,121 @@ app.post('/api/auth/login', (req, res) => {
     logSecurityEvent('USER_LOGIN', String(identifier), 'GUEST', 'Failed login attempt with incorrect credentials', identifier, 'FAILURE');
     return res.status(401).json({ error: 'Invalid Employee ID / Email or Password' });
   }
+  if (getCompany(user.companyId)?.subscriptionStatus !== 'ACTIVE') {
+    return res.status(403).json({ error: 'This company workspace is inactive. Contact your platform administrator.' });
+  }
 
   const publicUser = toPublicUser(user);
-  const token = generateToken(publicUser);
+  const csrfToken = issueSessionCookie(res, publicUser);
 
   logSecurityEvent('USER_LOGIN', user.email, user.role, `Successful login by ${user.name} (${user.employeeId})`, user.employeeId);
 
   return res.json({
     message: 'Login successful',
-    token,
     user: publicUser,
+    csrfToken,
     requiresFirstPasswordSetup: user.isFirstLogin || user.status === 'PENDING_SETUP',
   });
+});
+
+app.get('/api/auth/session', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (req: any, res) => {
+  const user = users.find((entry) => entry.id === req.user.id && entry.companyId === req.user.companyId);
+  if (!user) return res.status(401).json({ error: 'Session account is no longer available.' });
+  return res.json({ user: toPublicUser(user), csrfToken: req.user.csrfToken });
+});
+
+app.post('/api/auth/logout', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (req: any, res) => {
+  clearSessionCookie(res);
+  logSecurityEvent('USER_LOGIN', req.user.email, req.user.role, 'User signed out', req.user.employeeId);
+  return res.json({ message: 'Signed out successfully.' });
 });
 
 // Mandatory First-Time Password Setup Wizard
 app.post('/api/auth/set-first-password', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
   const { employeeId, email, newPassword } = req.body ?? {};
-  const identifier = employeeId || email;
+  const identifier = email || employeeId;
 
   if (!identifier || !newPassword) {
     return res.status(400).json({ error: 'Employee identifier and new password are required' });
   }
   if (
     !req.user.isFirstLogin
-    || String(identifier).trim().toUpperCase() !== String(req.user.employeeId).toUpperCase()
+    || (
+      String(identifier).trim().toUpperCase() !== String(req.user.employeeId).toUpperCase()
+      && String(identifier).trim().toLowerCase() !== String(req.user.email).toLowerCase()
+    )
   ) {
     return res.status(403).json({ error: 'A valid first-login session for this employee is required' });
   }
 
-  const result = setFirstPassword(String(identifier), String(newPassword));
+  const result = setFirstPassword(String(identifier), String(newPassword), req.user.companyId);
 
-  if (!result.success || !result.user) {
+  const firstPasswordUser = result.user;
+  if (!result.success || !firstPasswordUser) {
     return res.status(400).json({ error: result.error || 'Password setup failed' });
   }
 
-  await persistUser(result.user, await bcrypt.hash(String(newPassword), 12));
+  const account = users.find((user) => user.id === firstPasswordUser.id && user.companyId === req.user.companyId);
+  if (!account) return res.status(500).json({ error: 'Password setup could not be saved. Please try again.' });
+  await persistUser(account, await bcrypt.hash(String(newPassword), 12));
 
-  const token = generateToken(result.user);
+  const csrfToken = issueSessionCookie(res, firstPasswordUser);
 
   return res.json({
     message: 'Password successfully updated. Account activated.',
-    token,
-    user: result.user,
+    user: firstPasswordUser,
+    csrfToken,
   });
 });
 
 // MFA Enrollment and TOTP Verification
 app.post('/api/auth/mfa/enroll', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
-  const result = enrollMfa(req.user.employeeId);
+  const account = users.find((user) => user.id === req.user.id && user.companyId === req.user.companyId);
+  if (!account) return res.status(404).json({ error: 'Employee account not found' });
+  const previousMfaState = { mfaEnabled: account.mfaEnabled, mfaSecret: account.mfaSecret };
+  const result = enrollMfa(req.user.email, req.user.companyId);
   if (!result) return res.status(404).json({ error: 'Employee account not found' });
-  await persistUserState(users.find((user) => user.employeeId === req.user.employeeId)!);
+  try {
+    await persistMfaState(account);
+  } catch (error) {
+    account.mfaEnabled = previousMfaState.mfaEnabled;
+    account.mfaSecret = previousMfaState.mfaSecret;
+    console.error('Failed to persist MFA enrollment', error);
+    return res.status(isDatabaseReady() ? 500 : 503).json({ error: 'MFA enrollment could not be saved to PostgreSQL. Please try again.' });
+  }
   return res.json({ message: 'MFA enrollment created. Scan the URI with an authenticator app.', secret: result.secret, uri: result.uri, user: result.user });
 });
 
-app.post('/api/auth/verify-mfa', async (req: any, res) => {
-  const { code, employeeId } = req.body ?? {};
+app.post('/api/auth/verify-mfa', verificationRateLimiter, authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), async (req: any, res) => {
+  const { code, employeeId, email } = req.body ?? {};
+  const identifier = email || employeeId;
 
-  if (!code || !employeeId || String(code).length !== 6) {
+  if (!code || !identifier || String(code).length !== 6) {
     return res.status(400).json({ error: 'Valid 6-digit MFA code required' });
   }
+  if (
+    String(identifier).trim().toUpperCase() !== String(req.user.employeeId).toUpperCase()
+    && String(identifier).trim().toLowerCase() !== String(req.user.email).toLowerCase()
+  ) {
+    return res.status(403).json({ error: 'You can only verify MFA for your own account' });
+  }
 
-  const user = verifyMfa(String(employeeId), String(code));
+  const accountBeforeVerification = users.find((entry) => entry.id === req.user.id && entry.companyId === req.user.companyId);
+  const previousMfaEnabled = accountBeforeVerification?.mfaEnabled ?? false;
+  const user = verifyMfa(req.user.email, String(code), req.user.companyId);
   if (!user) return res.status(401).json({ error: 'Invalid MFA code or MFA is not enrolled' });
-  await persistUserState(user);
+  try {
+    await persistMfaState(user);
+  } catch (error) {
+    user.mfaEnabled = previousMfaEnabled;
+    console.error('Failed to persist MFA verification', error);
+    return res.status(isDatabaseReady() ? 500 : 503).json({ error: 'MFA verification could not be saved to PostgreSQL. Please try again.' });
+  }
 
   return res.json({
     message: 'MFA verified successfully',
     verified: true,
+    user: toPublicUser(user),
   });
 });
 
@@ -417,8 +567,16 @@ app.post('/api/auth/quick-switch', (req, res) => {
   if (process.env.NODE_ENV === 'production') {
     return res.sendStatus(404);
   }
-  const { employeeId } = req.body ?? {};
-  const user = users.find((u) => u.employeeId === employeeId);
+  const { employeeId, email, companyId } = req.body ?? {};
+  const identifier = String(email || employeeId || '').trim().toLowerCase();
+  const matches = users.filter((user) => (
+    (!companyId || user.companyId === String(companyId))
+    && (email ? user.email.toLowerCase() === identifier : user.employeeId.toLowerCase() === identifier)
+  ));
+  if (matches.length > 1) {
+    return res.status(409).json({ error: 'This employee ID belongs to multiple accounts. Switch using the account email and company.' });
+  }
+  const user = matches[0];
   if (!user) {
     return res.status(404).json({ error: 'Employee profile not found' });
   }
@@ -428,63 +586,68 @@ app.post('/api/auth/quick-switch', (req, res) => {
   }
 
   const { password: _, ...publicUser } = user;
-  const token = generateToken(publicUser);
+  const csrfToken = issueSessionCookie(res, publicUser);
   return res.json({
     message: `Switched session to ${user.name}`,
-    token,
     user: publicUser,
+    csrfToken,
   });
 });
 
 // Send 6-Digit Email Verification Code (OTP)
-app.post('/api/auth/send-verification-code', async (req, res) => {
-  const { identifier, employeeId, email } = req.body ?? {};
+app.post('/api/auth/send-verification-code', verificationRateLimiter, requireTurnstile('auth'), async (req, res) => {
+  const { identifier, employeeId, email, companyId } = req.body ?? {};
   const target = identifier || employeeId || email;
 
   if (!target) {
     return res.status(400).json({ error: 'Employee ID or email is required to send verification code' });
   }
 
-  const result = sendEmailVerificationCode(String(target));
+  if (!isEmailDeliveryConfigured()) {
+    return res.status(503).json({ error: 'Email delivery is not configured. Contact your administrator.' });
+  }
+
+  const requestedCompanyId = companyId ? String(companyId) : undefined;
+  const result = sendEmailVerificationCode(String(target), requestedCompanyId);
   if (!result.success) {
     return res.status(400).json({ error: result.error || 'Failed to dispatch verification code' });
   }
 
   try {
-    await dispatchEmailVerificationCode(String(target), result.code || '');
+    await dispatchEmailVerificationCode(String(target), result.code || '', requestedCompanyId);
   } catch (error) {
+    clearEmailVerificationCode(String(target), requestedCompanyId);
     return res.status(502).json({ error: error instanceof Error ? `Email delivery failed: ${error.message}` : 'Email delivery failed' });
   }
 
   return res.json({
     message: `A 6-digit authentication code was sent to ${result.email}`,
     email: result.email,
-    ...(process.env.SMTP_HOST ? {} : { code: result.code }),
     expiresAt: result.expiresAt,
   });
 });
 
 // Confirm & Verify Email Code
-app.post('/api/auth/verify-email-code', async (req, res) => {
-  const { identifier, employeeId, email, code } = req.body ?? {};
+app.post('/api/auth/verify-email-code', verificationRateLimiter, requireTurnstile('auth'), async (req, res) => {
+  const { identifier, employeeId, email, code, companyId } = req.body ?? {};
   const target = identifier || employeeId || email;
 
   if (!target || !code) {
     return res.status(400).json({ error: 'Identifier and 6-digit code are required' });
   }
 
-  const result = verifyEmailCode(String(target), String(code));
+  const result = verifyEmailCode(String(target), String(code), companyId ? String(companyId) : undefined);
   if (!result.success || !result.user) {
     return res.status(400).json({ error: result.error || 'Invalid verification code' });
   }
 
-  await persistUserVerification(result.user.employeeId);
+  await persistUserVerification(result.user.id, result.user.companyId);
 
-  const token = generateToken(result.user);
+  const csrfToken = issueSessionCookie(res, result.user);
   return res.json({
     message: `Email verified successfully! Your account is now confirmed.`,
     user: result.user,
-    token,
+    csrfToken,
     emailVerified: true,
   });
 });
@@ -497,21 +660,37 @@ app.post('/api/auth/verify-email-code', async (req, res) => {
 app.post('/api/admin/employees', authorize('ADMIN'), async (req: any, res) => {
   const { name, email, role, sector, tempPassword } = req.body ?? {};
 
-  const result = registerEmployee({
-    name: String(name ?? ''),
-    email: String(email ?? ''),
-    role: role as UserRole,
-    sector: sector as EmployeeSector,
-    tempPassword: tempPassword ? String(tempPassword) : undefined,
-    adminActor: req.user.email,
-    companyId: req.user.companyId,
-  });
+  let result: ReturnType<typeof registerEmployee>;
+  try {
+    result = registerEmployee({
+      name: String(name ?? ''),
+      email: String(email ?? ''),
+      role: role as UserRole,
+      sector: sector as EmployeeSector,
+      tempPassword: tempPassword ? String(tempPassword) : undefined,
+      adminActor: req.user.email,
+      companyId: req.user.companyId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to register employee';
+    const status = message.startsWith('An employee with email ') ? 409 : 400;
+    return res.status(status).json({ error: message });
+  }
 
   if (!result.success || !result.user) {
     return res.status(400).json({ error: result.error });
   }
 
-  await persistUser(result.user, await bcrypt.hash(result.generatedPassword, 12));
+  try {
+    const account = users.find((user) => user.id === result.user.id && user.companyId === req.user.companyId);
+    if (!account) throw new Error('New employee account was not available for persistence.');
+    await persistUser(account, await bcrypt.hash(result.generatedPassword, 12));
+  } catch (error) {
+    const userIndex = users.findIndex((user) => user.id === result.user.id);
+    if (userIndex >= 0) users.splice(userIndex, 1);
+    console.error('Failed to persist newly registered employee', error);
+    return res.status(500).json({ error: 'Employee registration could not be saved. Please try again.' });
+  }
 
   return res.status(201).json({
     message: `Employee registered successfully with ID: ${result.user.employeeId}`,
@@ -540,16 +719,54 @@ app.get('/api/platform/companies', authorizePlatformAdmin, (_req, res) => {
   return res.json({ companies });
 });
 
-app.patch('/api/admin/company', authorize('ADMIN'), (req: any, res) => {
+app.patch('/api/admin/company', authorize('ADMIN'), async (req: any, res) => {
   const company = getCompany(req.user.companyId);
   if (!company) return res.status(404).json({ error: 'Company not found' });
-  for (const key of ['legalName', 'tradingName', 'registrationNumber', 'taxNumber', 'currency', 'timezone']) {
-    if (req.body?.[key] !== undefined) (company as any)[key] = String(req.body[key]).trim();
+
+  const updates: Record<string, string> = {};
+  const fields = ['legalName', 'tradingName', 'registrationNumber', 'taxNumber', 'currency', 'timezone'] as const;
+  for (const key of fields) {
+    if (req.body?.[key] === undefined) continue;
+    if (typeof req.body[key] !== 'string') return res.status(400).json({ error: `${key} must be a string` });
+    const value = req.body[key].trim();
+    if ((key === 'legalName' || key === 'tradingName' || key === 'currency' || key === 'timezone') && !value) {
+      return res.status(400).json({ error: `${key} cannot be empty` });
+    }
+    if (key === 'legalName' && value.length > 200) return res.status(400).json({ error: 'legalName cannot exceed 200 characters' });
+    if (key === 'tradingName' && value.length > 150) return res.status(400).json({ error: 'tradingName cannot exceed 150 characters' });
+    if ((key === 'registrationNumber' || key === 'taxNumber') && value.length > 100) {
+      return res.status(400).json({ error: `${key} cannot exceed 100 characters` });
+    }
+    if (key === 'currency') {
+      const code = value.toUpperCase();
+      if (!/^[A-Z]{3}$/.test(code)) return res.status(400).json({ error: 'currency must be a three-letter currency code' });
+      try {
+        new Intl.NumberFormat('en-ZA', { style: 'currency', currency: code });
+      } catch {
+        return res.status(400).json({ error: 'currency must be a supported ISO 4217 currency code' });
+      }
+      updates[key] = code;
+      continue;
+    }
+    if (key === 'timezone') {
+      if (value.length > 80) return res.status(400).json({ error: 'timezone cannot exceed 80 characters' });
+      try {
+        new Intl.DateTimeFormat('en-ZA', { timeZone: value });
+      } catch {
+        return res.status(400).json({ error: 'timezone must be a valid IANA timezone' });
+      }
+    }
+    updates[key] = value;
   }
-  const persist = isDatabaseReady()
-    ? CompanyModel.update(company as any, { where: { id: company.id } })
-    : Promise.resolve();
-  return persist.then(() => res.json({ message: 'Company profile updated', company }));
+  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'At least one company detail must be provided' });
+  try {
+    await persistCompanyProfile(req.user.companyId, updates);
+  } catch (error) {
+    console.error('Failed to persist company profile', error);
+    return res.status(isDatabaseReady() ? 500 : 503).json({ error: 'Company profile could not be saved to PostgreSQL. Please try again.' });
+  }
+  Object.assign(company, updates);
+  return res.json({ message: 'Company profile updated', company });
 });
 
 app.post('/api/platform/companies', authorizePlatformAdmin, async (req: any, res) => {
@@ -592,6 +809,33 @@ app.patch('/api/platform/companies/:companyId', authorizePlatformAdmin, async (r
   return res.json({ message: 'Company details updated', company, companies });
 });
 
+app.patch('/api/platform/companies/:companyId/status', authorizePlatformAdmin, async (req: any, res) => {
+  const company = getCompany(req.params.companyId);
+  if (!company) return res.status(404).json({ error: 'Company not found' });
+
+  const status: unknown = req.body?.subscriptionStatus;
+  if (status !== 'ACTIVE' && status !== 'SUSPENDED' && status !== 'ARCHIVED') {
+    return res.status(400).json({ error: 'subscriptionStatus must be ACTIVE, SUSPENDED, or ARCHIVED' });
+  }
+  if (status === company.subscriptionStatus) {
+    return res.status(400).json({ error: `Company is already ${status.toLowerCase()}` });
+  }
+  if (status === 'ARCHIVED' && (company.id === 'company-default' || company.id === req.user.companyId)) {
+    return res.status(400).json({ error: 'You cannot archive the default company or your own platform administrator workspace' });
+  }
+
+  try {
+    await persistCompanyStatus(company.id, status);
+  } catch (error) {
+    console.error('Failed to persist company status', error);
+    return res.status(isDatabaseReady() ? 500 : 503).json({ error: 'Company status could not be saved to PostgreSQL. Please try again.' });
+  }
+
+  company.subscriptionStatus = status;
+  logSecurityEvent('USER_ROLE_UPDATED', req.user.email, 'ADMIN', `Company ${company.tradingName} status changed to ${status}`, company.id);
+  return res.json({ message: `Company status changed to ${status.toLowerCase()}`, company, companies });
+});
+
 app.post('/api/platform/companies/:companyId/admin', authorizePlatformAdmin, async (req: any, res) => {
   const company = getCompany(req.params.companyId);
   if (!company) return res.status(404).json({ error: 'Company not found' });
@@ -604,7 +848,9 @@ app.post('/api/platform/companies/:companyId/admin', authorizePlatformAdmin, asy
     adminActor: req.user.email,
     companyId: company.id,
   });
-  await persistUser(result.user, await bcrypt.hash(result.generatedPassword, 12));
+  const account = users.find((user) => user.id === result.user.id && user.companyId === company.id);
+  if (!account) throw new Error('New company administrator account was not available for persistence.');
+  await persistUser(account, await bcrypt.hash(result.generatedPassword, 12));
   return res.status(201).json({ message: 'Company administrator created', company, user: result.user, temporaryPassword: result.generatedPassword });
 });
 
@@ -719,36 +965,72 @@ app.get('/api/admin/policies', authorize('ADMIN'), (_req, res) => {
 });
 
 app.patch('/api/admin/policies', authorize('ADMIN'), async (req: any, res) => {
-  const allowed = ['owner', 'reviewDate', 'currency', 'vatRate', 'sessionDurationHours', 'tlsStatus', 'password', 'controls'];
+  const allowed = ['owner', 'reviewDate', 'vatRate', 'sessionDurationHours', 'password', 'controls'];
   const changes: any = {};
   for (const key of allowed) if (req.body?.[key] !== undefined) changes[key] = req.body[key];
+  if (Object.keys(changes).length === 0) return res.status(400).json({ error: 'At least one editable policy setting is required' });
+  if (changes.owner !== undefined && (typeof changes.owner !== 'string' || !changes.owner.trim() || changes.owner.length > 120)) {
+    return res.status(400).json({ error: 'Policy owner must be a non-empty value of at most 120 characters' });
+  }
+  if (changes.reviewDate !== undefined) {
+    const parsedReviewDate = typeof changes.reviewDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(changes.reviewDate)
+      ? new Date(`${changes.reviewDate}T00:00:00Z`)
+      : undefined;
+    if (!parsedReviewDate || Number.isNaN(parsedReviewDate.getTime()) || parsedReviewDate.toISOString().slice(0, 10) !== changes.reviewDate) {
+      return res.status(400).json({ error: 'Review date must be a valid date in YYYY-MM-DD format' });
+    }
+  }
+  if (changes.owner !== undefined) changes.owner = changes.owner.trim();
   if (changes.vatRate !== undefined && (!Number.isFinite(Number(changes.vatRate)) || Number(changes.vatRate) < 0 || Number(changes.vatRate) > 100)) {
     return res.status(400).json({ error: 'VAT rate must be between 0 and 100' });
   }
+  if (changes.vatRate !== undefined) changes.vatRate = Number(changes.vatRate);
   if (changes.sessionDurationHours !== undefined && (!Number.isInteger(Number(changes.sessionDurationHours)) || Number(changes.sessionDurationHours) < 1 || Number(changes.sessionDurationHours) > 24)) {
     return res.status(400).json({ error: 'Session duration must be a whole number between 1 and 24 hours' });
   }
+  if (changes.sessionDurationHours !== undefined) changes.sessionDurationHours = Number(changes.sessionDurationHours);
   if (changes.tlsStatus !== undefined && !['CONFIGURED', 'REQUIRES_DEPLOYMENT'].includes(changes.tlsStatus)) {
     return res.status(400).json({ error: 'TLS status is invalid' });
   }
   if (changes.password !== undefined) {
     const password = changes.password;
-    if (!password || typeof password !== 'object' || !Number.isInteger(Number(password.minimumLength)) || Number(password.minimumLength) < 6 || Number(password.minimumLength) > 64) {
+    if (!password || typeof password !== 'object' || Array.isArray(password)) {
+      return res.status(400).json({ error: 'Password requirements must be an object' });
+    }
+    if (password.minimumLength !== undefined && (!Number.isInteger(Number(password.minimumLength)) || Number(password.minimumLength) < 6 || Number(password.minimumLength) > 64)) {
       return res.status(400).json({ error: 'Password minimum length must be a whole number between 6 and 64' });
     }
+    if (password.minimumLength !== undefined) password.minimumLength = Number(password.minimumLength);
     const passwordFlags = ['requireUppercase', 'requireLowercase', 'requireNumber', 'requireSpecial', 'firstLoginChangeRequired'];
-    if (passwordFlags.some((key) => typeof password[key] !== 'boolean')) {
+    if (passwordFlags.some((key) => password[key] !== undefined && typeof password[key] !== 'boolean')) {
       return res.status(400).json({ error: 'Password requirements must be boolean values' });
     }
   }
   if (changes.controls !== undefined) {
     const validStatuses = ['ENFORCED', 'RECOMMENDED', 'REQUIRES_DEPLOYMENT', 'DISABLED'];
-    if (!Array.isArray(changes.controls) || changes.controls.some((control: any) => !control?.id || !validStatuses.includes(control.status))) {
+    const existingPolicy = getCurrentPolicy(req.user.companyId);
+    const existingControlIds = new Set(existingPolicy.controls.map((control) => control.id));
+    if (
+      !Array.isArray(changes.controls)
+      || changes.controls.length === 0
+      || changes.controls.some((control: any) => !existingControlIds.has(control?.id) || !validStatuses.includes(control?.status))
+      || new Set(changes.controls.map((control: any) => control.id)).size !== changes.controls.length
+    ) {
       return res.status(400).json({ error: 'Each policy control must have a valid status' });
     }
+    const oldTlsStatus = existingPolicy.controls.find((control) => control.id === 'tls-edge')?.status;
+    if (changes.controls.some((control: any) => control.id === 'tls-edge' && control.status !== oldTlsStatus)) {
+      return res.status(400).json({ error: 'TLS edge configuration is deployment-managed and cannot be changed in the application' });
+    }
   }
-  const policy = updateSystemPolicy(changes, req.user?.email || 'admin');
-  await persistCompanyPolicy(req.user.companyId, policy);
+  const policy = updateSystemPolicy(changes, req.user?.email || 'admin', req.user.companyId);
+  try {
+    await persistCompanyPolicy(req.user.companyId, policy);
+  } catch (error) {
+    console.error('Failed to persist company policy', error);
+    return res.status(isDatabaseReady() ? 500 : 503).json({ error: 'Policy changes could not be saved to PostgreSQL. Please try again.' });
+  }
+  setCurrentPolicy(req.user.companyId, policy);
   logSecurityEvent('USER_ROLE_UPDATED', req.user?.email || 'admin', 'ADMIN', `Policy version ${policy.version} updated`, 'SYSTEM-POLICY');
   return res.json({ message: `Policy version ${policy.version} saved`, policy });
 });
@@ -796,12 +1078,16 @@ app.get('/api/products', authorize('ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_STA
 
 app.post('/api/products', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'), async (req: any, res) => {
   try {
+    const supplierId = Number(req.body?.supplierId);
+    if (!Number.isInteger(supplierId) || !getActiveSupplierById(supplierId)) {
+      return res.status(400).json({ error: 'Choose an active supplier that is registered with this company' });
+    }
     const product = createProduct({
       sku: String(req.body?.sku ?? ''),
       barcode: String(req.body?.barcode ?? ''),
       name: String(req.body?.name ?? ''),
       category: String(req.body?.category ?? ''),
-      supplierId: Number(req.body?.supplierId ?? 1),
+      supplierId,
       stock: Number(req.body?.stock ?? 0),
       reorderPoint: Number(req.body?.reorderPoint ?? 0),
       reorderQuantity: Number(req.body?.reorderQuantity ?? 1),
@@ -824,6 +1110,15 @@ app.patch('/api/products/:id', authorize('ADMIN', 'MANAGER', 'PROCUREMENT_STAFF'
   try {
     const product = findProductById(Number(req.params.id));
     if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    if (req.body?.supplierId !== undefined) {
+      const supplierId = Number(req.body.supplierId);
+      const currentSupplierId = Number(product.supplierId);
+      const supplier = getSupplierById(supplierId);
+      if (!Number.isInteger(supplierId) || !supplier || (supplier.isArchived && supplierId !== currentSupplierId)) {
+        return res.status(400).json({ error: 'Choose an active supplier that is registered with this company' });
+      }
+    }
 
     const editableFields = ['barcode', 'name', 'category', 'supplierId', 'reorderPoint', 'reorderQuantity', 'unitCost', 'price', 'warehouse', 'warehouseId', 'binLocation', 'imageUrl', 'isActive'];
     for (const field of editableFields) {
@@ -1095,6 +1390,87 @@ app.get('/api/suppliers', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROC
   res.json({ suppliers: getSupplierPerformance() });
 });
 
+app.post('/api/suppliers', authorize('PROCUREMENT_STAFF'), async (req, res) => {
+  try {
+    const input = validateNewSupplier(req.body ?? {});
+    const requestedProductIds = req.body?.productIds ?? [];
+    if (!Array.isArray(requestedProductIds) || requestedProductIds.some((id: unknown) => !Number.isInteger(id) || Number(id) <= 0)) {
+      return res.status(400).json({ error: 'Product assignments must be a list of valid product IDs' });
+    }
+    const productIds = [...new Set(requestedProductIds as number[])];
+    if (productIds.length !== requestedProductIds.length || productIds.some((id) => !findProductById(id))) {
+      return res.status(400).json({ error: 'One or more selected products are invalid for this company' });
+    }
+
+    const supplier = await persistSupplier(input, productIds);
+    addSupplier(supplier);
+    for (const productId of productIds) {
+      const product = findProductById(productId);
+      if (product) {
+        product.supplierId = supplier.id;
+        product.updatedAt = new Date().toISOString();
+      }
+    }
+    return res.status(201).json({
+      message: 'Supplier added',
+      supplier: getSupplierPerformance().find((entry) => entry.id === supplier.id),
+      suppliers: getSupplierPerformance(),
+      assignedProductIds: productIds,
+    });
+  } catch (error) {
+    if (error instanceof SupplierError) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    console.error('Unable to add supplier', error);
+    return res.status(500).json({ error: 'Unable to add supplier' });
+  }
+});
+
+app.patch('/api/suppliers/:id/archive', authorize('PROCUREMENT_STAFF'), async (req, res) => {
+  const supplierId = Number(req.params.id);
+  if (!Number.isInteger(supplierId) || supplierId <= 0 || typeof req.body?.isArchived !== 'boolean') {
+    return res.status(400).json({ error: 'A valid supplier ID and archive status are required' });
+  }
+  if (!getSupplierById(supplierId)) return res.status(404).json({ error: 'Supplier not found' });
+
+  try {
+    const updated = await persistSupplierArchivedStatus(supplierId, req.body.isArchived);
+    if (!updated) return res.status(404).json({ error: 'Supplier not found' });
+    setSupplierArchived(supplierId, req.body.isArchived);
+    return res.json({
+      message: req.body.isArchived ? 'Supplier archived' : 'Supplier restored',
+      suppliers: getSupplierPerformance(),
+    });
+  } catch (error) {
+    console.error('Unable to update supplier archive status', error);
+    return res.status(500).json({ error: 'Unable to update supplier archive status' });
+  }
+});
+
+app.delete('/api/suppliers/:id', authorize('PROCUREMENT_STAFF'), async (req, res) => {
+  const supplierId = Number(req.params.id);
+  if (!Number.isInteger(supplierId) || supplierId <= 0) {
+    return res.status(400).json({ error: 'A valid supplier ID is required' });
+  }
+
+  try {
+    const result = await deletePersistedSupplier(supplierId);
+    if (!result.found) return res.status(404).json({ error: 'Supplier not found' });
+    if (!result.deleted) {
+      return res.status(409).json({
+        error: 'Reassign this supplier’s products and purchase orders before deleting it.',
+        productCount: result.productCount,
+        purchaseOrderCount: result.purchaseOrderCount,
+      });
+    }
+    removeSupplier(supplierId);
+    return res.json({ message: 'Supplier permanently deleted', suppliers: getSupplierPerformance() });
+  } catch (error) {
+    console.error('Unable to delete supplier', error);
+    return res.status(500).json({ error: 'Unable to delete supplier' });
+  }
+});
+
 app.get('/api/purchase-orders', authorize('ADMIN', 'MANAGER', 'WAREHOUSE_STAFF', 'PROCUREMENT_STAFF'), (_req, res) => {
   res.json({ purchaseOrders: getPurchaseOrders() });
 });
@@ -1284,10 +1660,9 @@ const startServer = (port: number) => {
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code === 'EADDRINUSE') {
-      const nextPort = port + 1;
-      console.log(`Port ${port} is busy, retrying on ${nextPort}`);
-      server.close(() => startServer(nextPort));
-      return;
+      throw new Error(
+        `API port ${port} is already in use. Stop the existing API process or set PORT and VITE_API_PROXY_TARGET to the same port.`,
+      );
     }
 
     throw error;

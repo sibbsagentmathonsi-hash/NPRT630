@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch as fetch } from '../../utils/apiClient';
 import { Icon } from '../common/Icons';
+import { formatCompanyTime, formatCurrency } from '../../utils/companyFormatting';
 
 const sectorsList = [
   'Store Management',
@@ -17,7 +19,23 @@ const rolesList = [
   { role: 'PROCUREMENT_STAFF', label: 'Procurement Staff (Suppliers & Purchase Orders)' },
 ];
 
-export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionExpired, initialTab = 'employees' }) => {
+const fallbackCurrencies = ['AUD', 'BWP', 'CAD', 'EUR', 'GBP', 'GHS', 'INR', 'JPY', 'KES', 'LSL', 'NAD', 'NGN', 'SZL', 'USD', 'ZAR', 'ZMW'];
+const currencyOptions = (typeof Intl.supportedValuesOf === 'function'
+  ? Intl.supportedValuesOf('currency')
+  : fallbackCurrencies)
+  .map((code) => ({
+    code,
+    label: `${code} — ${new Intl.DisplayNames(['en'], { type: 'currency' }).of(code) || code}`,
+  }))
+  .sort((left, right) => left.label.localeCompare(right.label));
+
+const fallbackTimezones = ['Africa/Johannesburg', 'America/Chicago', 'America/Los_Angeles', 'America/New_York', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Tokyo', 'Australia/Sydney', 'Europe/London', 'Europe/Paris'];
+const timezoneOptions = [...new Set([
+  'UTC',
+  ...(typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : fallbackTimezones),
+])].sort();
+
+export const AdminPortal = ({ apiBase, token, currentUser, onUserUpdate, onNotify, onSessionExpired, initialTab = 'employees' }) => {
   const isPlatformAdmin = Boolean(currentUser?.isPlatformAdmin);
   const [activeTab, setActiveTab] = useState('employees'); // 'employees' | 'products' | 'procurement' | 'warehouses' | 'audit-logs' | 'policies' | 'companies'
   useEffect(() => setActiveTab(initialTab === 'add-company' ? 'companies' : ['employees', 'products', 'procurement', 'warehouses', 'audit-logs', 'policies', 'companies'].includes(initialTab) ? initialTab : 'employees'), [initialTab]);
@@ -27,6 +45,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
   const [suppliers, setSuppliers] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [employeeLoadError, setEmployeeLoadError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSector, setSelectedSector] = useState('ALL');
   const [productQuery, setProductQuery] = useState('');
@@ -36,6 +55,13 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
   const [auditStatus, setAuditStatus] = useState('ALL');
   const [policy, setPolicy] = useState(null);
   const [policySaving, setPolicySaving] = useState(false);
+  const [mfaEnrollment, setMfaEnrollment] = useState(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaSaving, setMfaSaving] = useState(false);
+  const requiresAdminMfa = Boolean(
+    policy?.controls?.some((control) => control.id === 'mfa-enrollment' && control.status === 'ENFORCED')
+    && !currentUser?.mfaEnabled
+  );
   const [company, setCompany] = useState(null);
   const [companySaving, setCompanySaving] = useState(false);
   const [platformCompanies, setPlatformCompanies] = useState([]);
@@ -92,6 +118,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
   const fetchEmployees = async () => {
     try {
       setLoading(true);
+      setEmployeeLoadError('');
       const res = await fetch(`${apiBase}/api/admin/employees`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -100,11 +127,11 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
         onSessionExpired?.();
         return;
       }
-      if (res.ok && data.employees) {
-        setEmployees(data.employees);
-      }
+      if (!res.ok) throw new Error(data.error || 'Unable to load employee directory');
+      setEmployees(data.employees || []);
     } catch (err) {
       console.error('Failed to load employees', err);
+      setEmployeeLoadError(err instanceof Error ? err.message : 'Unable to load employee directory');
     } finally {
       setLoading(false);
     }
@@ -242,6 +269,45 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
     }
   };
 
+  const startMfaEnrollment = async () => {
+    setMfaSaving(true);
+    try {
+      const res = await fetch(`${apiBase}/api/auth/mfa/enroll`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to start MFA enrollment');
+      setMfaEnrollment(data);
+      onNotify?.(data.message, 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setMfaSaving(false);
+    }
+  };
+
+  const verifyMfaEnrollment = async () => {
+    setMfaSaving(true);
+    try {
+      const res = await fetch(`${apiBase}/api/auth/verify-mfa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ employeeId: currentUser.employeeId, code: mfaCode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to verify MFA enrollment');
+      onUserUpdate?.(data.user);
+      setMfaEnrollment(null);
+      setMfaCode('');
+      onNotify?.(data.message, 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setMfaSaving(false);
+    }
+  };
+
   const createCompany = async (event) => {
     event.preventDefault();
     setCompanyProvisioning(true);
@@ -275,6 +341,30 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
       setPlatformCompanies(data.companies || []);
       setEditingCompany(null);
       onNotify?.('Company details saved', 'success');
+    } catch (err) {
+      onNotify?.(err.message, 'error');
+    } finally {
+      setCompanyProvisioning(false);
+    }
+  };
+
+  const changeCompanyStatus = async (item) => {
+    const nextStatus = item.subscriptionStatus === 'ARCHIVED' ? 'ACTIVE' : 'ARCHIVED';
+    if (nextStatus === 'ARCHIVED' && !window.confirm(
+      `Archive ${item.tradingName}? Users will lose access, but the company's records will be retained. You can restore it later.`
+    )) return;
+
+    setCompanyProvisioning(true);
+    try {
+      const res = await fetch(`${apiBase}/api/platform/companies/${item.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: ['Bearer', token].join(' ') },
+        body: JSON.stringify({ subscriptionStatus: nextStatus }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || (nextStatus === 'ARCHIVED' ? 'Unable to archive company' : 'Unable to restore company'));
+      setPlatformCompanies(data.companies || []);
+      onNotify?.(nextStatus === 'ARCHIVED' ? 'Company archived; its records have been retained.' : 'Company restored.', 'success');
     } catch (err) {
       onNotify?.(err.message, 'error');
     } finally {
@@ -546,13 +636,14 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                 <label className="form-label">Trading name<input className="form-input" required value={editingCompany.tradingName} onChange={(e) => setEditingCompany({ ...editingCompany, tradingName: e.target.value })} /></label>
                 <label className="form-label">Registration number<input className="form-input" value={editingCompany.registrationNumber || ''} onChange={(e) => setEditingCompany({ ...editingCompany, registrationNumber: e.target.value })} /></label>
                 <label className="form-label">Tax number<input className="form-input" value={editingCompany.taxNumber || ''} onChange={(e) => setEditingCompany({ ...editingCompany, taxNumber: e.target.value })} /></label>
-                <label className="form-label">Currency<input className="form-input" required minLength="3" maxLength="3" value={editingCompany.currency} onChange={(e) => setEditingCompany({ ...editingCompany, currency: e.target.value.toUpperCase() })} /></label>
-                <label className="form-label">Timezone<input className="form-input" required value={editingCompany.timezone} onChange={(e) => setEditingCompany({ ...editingCompany, timezone: e.target.value })} /></label>
+                <label className="form-label">Currency<select className="form-input" required value={editingCompany.currency} onChange={(e) => setEditingCompany({ ...editingCompany, currency: e.target.value })}>{!currencyOptions.some(({ code }) => code === editingCompany.currency) && <option value={editingCompany.currency}>{editingCompany.currency} (current)</option>}{currencyOptions.map(({ code, label }) => <option key={code} value={code}>{label}</option>)}</select></label>
+                <label className="form-label">Timezone<select className="form-input" required value={editingCompany.timezone} onChange={(e) => setEditingCompany({ ...editingCompany, timezone: e.target.value })}>{!timezoneOptions.includes(editingCompany.timezone) && <option value={editingCompany.timezone}>{editingCompany.timezone} (current)</option>}{timezoneOptions.map((timezone) => <option key={timezone} value={timezone}>{timezone.replace(/_/g, ' ')}</option>)}</select></label>
               </div>
             </form>
           )}
           <div className="card company-management-card company-list-card">
             <div className="card-header"><h2 className="card-title"><Icon name="layers" size={18} /> Company directory</h2></div>
+            <p className="policy-help">Archive a company to disable access while retaining its records. Archived companies can be restored at any time.</p>
             <div className="admin-table-wrap">
               <table className="admin-table">
                 <thead><tr><th>Company</th><th>Company ID</th><th>Registration / Tax</th><th>Currency</th><th>Timezone</th><th>Status</th><th>Actions</th></tr></thead>
@@ -564,8 +655,22 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                       <td>{item.registrationNumber || '—'}<small>{item.taxNumber || 'No tax number'}</small></td>
                       <td>{item.currency}</td>
                       <td>{item.timezone}</td>
-                      <td><span className="badge badge-success">{item.subscriptionStatus}</span></td>
-                      <td><button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditingCompany({ ...item })}><Icon name="edit" size={14} /> Edit details</button></td>
+                      <td><span className={`badge ${item.subscriptionStatus === 'ACTIVE' ? 'badge-success' : 'badge-warning'}`}>{item.subscriptionStatus}</span></td>
+                      <td>
+                        <div className="company-directory-actions">
+                          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditingCompany({ ...item })}><Icon name="edit" size={14} /> Edit details</button>
+                          {item.id !== 'company-default' && item.id !== currentUser?.companyId && (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={companyProvisioning || (item.subscriptionStatus !== 'ARCHIVED' && item.subscriptionStatus !== 'ACTIVE')}
+                              onClick={() => changeCompanyStatus(item)}
+                            >
+                              {item.subscriptionStatus === 'ARCHIVED' ? 'Restore' : 'Archive'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {platformCompanies.length === 0 && <tr><td colSpan="7">No companies are available.</td></tr>}
@@ -586,8 +691,8 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
               <label className="form-label">Trading name<input className="form-input" required value={newCompany.tradingName} onChange={(e) => setNewCompany({ ...newCompany, tradingName: e.target.value })} /></label>
               <label className="form-label">Registration number<input className="form-input" value={newCompany.registrationNumber} onChange={(e) => setNewCompany({ ...newCompany, registrationNumber: e.target.value })} /></label>
               <label className="form-label">Tax number<input className="form-input" value={newCompany.taxNumber} onChange={(e) => setNewCompany({ ...newCompany, taxNumber: e.target.value })} /></label>
-              <label className="form-label">Currency<input className="form-input" required minLength="3" maxLength="3" value={newCompany.currency} onChange={(e) => setNewCompany({ ...newCompany, currency: e.target.value.toUpperCase() })} /></label>
-              <label className="form-label">Timezone<input className="form-input" required value={newCompany.timezone} onChange={(e) => setNewCompany({ ...newCompany, timezone: e.target.value })} /></label>
+              <label className="form-label">Currency<select className="form-input" required value={newCompany.currency} onChange={(e) => setNewCompany({ ...newCompany, currency: e.target.value })}>{currencyOptions.map(({ code, label }) => <option key={code} value={code}>{label}</option>)}</select></label>
+              <label className="form-label">Timezone<select className="form-input" required value={newCompany.timezone} onChange={(e) => setNewCompany({ ...newCompany, timezone: e.target.value })}>{timezoneOptions.map((timezone) => <option key={timezone} value={timezone}>{timezone.replace(/_/g, ' ')}</option>)}</select></label>
             </div>
           </form>
           <form className="card company-management-card" onSubmit={provisionCompanyAdmin}>
@@ -726,7 +831,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                       )}
                     </td>
                     <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      {emp.lastLoginAt ? new Date(emp.lastLoginAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Never'}
+                      {emp.lastLoginAt ? formatCompanyTime(emp.lastLoginAt, company?.timezone) : 'Never'}
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       <div className="employee-directory-actions">
@@ -779,6 +884,19 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                     </td>
                   </tr>
                 ))}
+                {filteredEmployees.length === 0 && (
+                  <tr>
+                    <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                      {loading
+                        ? 'Loading employees…'
+                        : employeeLoadError
+                          ? `Employee directory unavailable: ${employeeLoadError}`
+                          : employees.length > 0
+                            ? 'No employees match the current search or sector filter.'
+                            : 'No employee accounts found for this company.'}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -809,7 +927,7 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
                 <td className="form-input-mono">{product.barcode}</td>
                 <td>{suppliers.find((supplier) => supplier.id === product.supplierId)?.name || product.supplierId}</td>
                 <td>{product.warehouseId} / {product.binLocation}</td>
-                <td>R {Number(product.price).toFixed(2)}</td>
+                <td>{formatCurrency(product.price, company?.currency || 'ZAR')}</td>
                 <td>{product.stock} ({product.availableStock} available)</td>
                 <td><span className={`badge ${!product.isActive ? 'badge-gray' : product.status === 'Healthy' ? 'badge-success' : product.status === 'Reorder' ? 'badge-danger' : 'badge-warning'}`}>{product.isActive ? product.status : 'Archived'}</span></td>
                 <td><button className="btn btn-secondary btn-sm" onClick={() => toggleProductActive(product)}>{product.isActive ? 'Archive' : 'Restore'}</button></td>
@@ -823,29 +941,59 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
       {/* TAB 3: PROCUREMENT OVERSIGHT */}
       {activeTab === 'procurement' && (
         <div>
-          <div className="grid-cols-3" style={{ marginBottom: '1.25rem' }}>
+          <div className="supplier-overview-grid">
             {suppliers.map((supplier) => (
-              <div className="card" key={supplier.id}>
-                <span className="badge badge-primary">Supplier</span>
-                <h3 style={{ marginTop: '8px' }}>{supplier.name}</h3>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>{supplier.contact}</p>
-                <p style={{ marginTop: '8px' }}>Lead time: {supplier.leadTimeDays} days</p>
-                <p style={{ marginTop: '8px' }}>
+              <div className="card supplier-summary-card" key={supplier.id}>
+                <div className="supplier-card-heading">
+                  <span className="badge badge-primary">Supplier</span>
+                  <span className="supplier-lead-time">{supplier.leadTimeDays} day lead time</span>
+                </div>
+                <h3>{supplier.name}</h3>
+                <p className="supplier-contact">{supplier.contact}</p>
+                <p className="supplier-rating">
                   {supplier.reviewCount
                     ? `Rating: ${supplier.rating} / 5 · ${supplier.reviewCount} PO review${supplier.reviewCount === 1 ? '' : 's'}`
                     : 'Not rated yet'}
                 </p>
                 {supplier.reviewCount > 0 && (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.8125rem', marginTop: '4px' }}>
-                    Delivery {Number(supplier.averageDeliveryScore).toFixed(2)} · Quality {Number(supplier.averageQualityScore).toFixed(2)} · Communication {Number(supplier.averageCommunicationScore).toFixed(2)}
-                  </p>
+                  <div className="supplier-score-list">
+                    <span>Delivery <strong>{Number(supplier.averageDeliveryScore).toFixed(2)}</strong></span>
+                    <span>Quality <strong>{Number(supplier.averageQualityScore).toFixed(2)}</strong></span>
+                    <span>Communication <strong>{Number(supplier.averageCommunicationScore).toFixed(2)}</strong></span>
+                  </div>
                 )}
               </div>
             ))}
           </div>
-          <div className="table-container card" style={{ padding: 0 }}>
-            <div className="card-header"><h3 className="card-title"><Icon name="truck" size={18} /> Purchase Orders</h3><div className="admin-inline-actions"><select className="form-select" value={poStatus} onChange={(e) => setPoStatus(e.target.value)}><option value="ALL">All statuses</option>{[...new Set(purchaseOrders.map((order) => order.status))].map((status) => <option key={status}>{status}</option>)}</select><button className="btn btn-secondary btn-sm" onClick={fetchOperationalData}><Icon name="refresh-cw" size={14} /> Refresh</button></div></div>
-            <table className="custom-table"><thead><tr><th>PO</th><th>Item</th><th>Supplier</th><th>Quantity</th><th>Received</th><th>Status</th></tr></thead><tbody>{filteredPurchaseOrders.map((order) => <tr key={order.id}><td className="form-input-mono">PO-{order.id}</td><td>{order.itemName}<div className="form-input-mono" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{order.sku}</div></td><td>{order.supplierName}</td><td>{order.quantity}</td><td>{order.receivedQuantity} / {order.quantity}</td><td><span className={`badge ${order.status === 'RECEIVED' ? 'badge-success' : order.status === 'CANCELLED' ? 'badge-danger' : order.status === 'PARTIALLY_RECEIVED' ? 'badge-warning' : 'badge-primary'}`}>{order.status}</span></td></tr>)}</tbody></table>
+          <div className="table-container card procurement-orders-card">
+            <div className="card-header procurement-orders-header">
+              <div>
+                <h3 className="card-title"><Icon name="truck" size={18} /> Purchase Orders</h3>
+                <p className="procurement-orders-caption">{filteredPurchaseOrders.length} {filteredPurchaseOrders.length === 1 ? 'order' : 'orders'}</p>
+              </div>
+              <div className="admin-inline-actions procurement-order-filters">
+                <select className="form-select" aria-label="Filter purchase orders by status" value={poStatus} onChange={(e) => setPoStatus(e.target.value)}>
+                  <option value="ALL">All statuses</option>
+                  {[...new Set(purchaseOrders.map((order) => order.status))].map((status) => <option key={status}>{status}</option>)}
+                </select>
+                <button className="btn btn-secondary btn-sm" onClick={fetchOperationalData}><Icon name="refresh-cw" size={14} /> Refresh</button>
+              </div>
+            </div>
+            <table className="custom-table procurement-orders-table">
+              <thead><tr><th>PO</th><th>Item</th><th>Supplier</th><th>Quantity</th><th>Received</th><th>Status</th></tr></thead>
+              <tbody>
+                {filteredPurchaseOrders.map((order) => (
+                  <tr key={order.id}>
+                    <td className="form-input-mono">PO-{order.id}</td>
+                    <td><strong>{order.itemName}</strong><span className="procurement-order-sku form-input-mono">{order.sku}</span></td>
+                    <td>{order.supplierName}</td>
+                    <td>{order.quantity}</td>
+                    <td>{order.receivedQuantity} / {order.quantity}</td>
+                    <td><span className={`badge ${order.status === 'RECEIVED' ? 'badge-success' : order.status === 'CANCELLED' ? 'badge-danger' : order.status === 'PARTIALLY_RECEIVED' ? 'badge-warning' : 'badge-primary'}`}>{order.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             {filteredPurchaseOrders.length === 0 && <div className="empty-state"><Icon name="truck" size={28} /><strong>No purchase orders match this view</strong><span>Try another status filter.</span></div>}
           </div>
         </div>
@@ -1015,75 +1163,91 @@ export const AdminPortal = ({ apiBase, token, currentUser, onNotify, onSessionEx
       {/* TAB 4: SYSTEM POLICIES & SECURITY */}
       {activeTab === 'policies' && (
         <div>
-          {company && <div className="card company-admin-card"><div className="card-header"><div><h3 className="card-title"><Icon name="building" size={18} /> Company profile</h3><p className="policy-help">This profile and its policies belong only to the current company.</p></div><button className="btn btn-primary btn-sm" disabled={companySaving} onClick={saveCompany}>{companySaving ? 'Saving…' : 'Save company'}</button></div><div className="policy-form-grid"><label className="form-label">Legal name<input className="form-input" value={company.legalName} onChange={(e) => setCompany({ ...company, legalName: e.target.value })} /></label><label className="form-label">Trading name<input className="form-input" value={company.tradingName} onChange={(e) => setCompany({ ...company, tradingName: e.target.value })} /></label><label className="form-label">Registration number<input className="form-input" value={company.registrationNumber || ''} onChange={(e) => setCompany({ ...company, registrationNumber: e.target.value })} /></label><label className="form-label">Tax number<input className="form-input" value={company.taxNumber || ''} onChange={(e) => setCompany({ ...company, taxNumber: e.target.value })} /></label><label className="form-label">Currency<input className="form-input" maxLength="3" value={company.currency} onChange={(e) => setCompany({ ...company, currency: e.target.value.toUpperCase() })} /></label><label className="form-label">Timezone<input className="form-input" value={company.timezone} onChange={(e) => setCompany({ ...company, timezone: e.target.value })} /></label></div></div>}
+          {company && <div className="card company-admin-card"><div className="card-header"><div><h3 className="card-title"><Icon name="building" size={18} /> Company profile</h3><p className="policy-help">This profile and its policies belong only to the current company.</p></div><button className="btn btn-primary btn-sm" disabled={companySaving} onClick={saveCompany}>{companySaving ? 'Saving…' : 'Save company'}</button></div><div className="policy-form-grid"><label className="form-label">Legal name<input className="form-input" value={company.legalName} onChange={(e) => setCompany({ ...company, legalName: e.target.value })} /></label><label className="form-label">Trading name<input className="form-input" value={company.tradingName} onChange={(e) => setCompany({ ...company, tradingName: e.target.value })} /></label><label className="form-label">Registration number<input className="form-input" value={company.registrationNumber || ''} onChange={(e) => setCompany({ ...company, registrationNumber: e.target.value })} /></label><label className="form-label">Tax number<input className="form-input" value={company.taxNumber || ''} onChange={(e) => setCompany({ ...company, taxNumber: e.target.value })} /></label><label className="form-label">Currency<select className="form-input" required value={company.currency} onChange={(e) => setCompany({ ...company, currency: e.target.value })}>{!currencyOptions.some(({ code }) => code === company.currency) && <option value={company.currency}>{company.currency} (current)</option>}{currencyOptions.map(({ code, label }) => <option key={code} value={code}>{label}</option>)}</select></label><label className="form-label">Timezone<select className="form-input" required value={company.timezone} onChange={(e) => setCompany({ ...company, timezone: e.target.value })}>{!timezoneOptions.includes(company.timezone) && <option value={company.timezone}>{company.timezone} (current)</option>}{timezoneOptions.map((timezone) => <option key={timezone} value={timezone}>{timezone.replace(/_/g, ' ')}</option>)}</select></label></div></div>}
           {policy && <div className="policy-config card">
             <div className="policy-overview">
               <div><span className="badge badge-success">Version {policy.version}</span><h3>Security & operational controls</h3><p>Owner: {policy.owner} · Effective {policy.effectiveDate} · Review {policy.reviewDate}</p></div>
-              <div className="policy-overview-meta"><span>History</span><strong>{policy.history.length} revisions</strong><span>TLS</span><strong>{policy.tlsStatus === 'CONFIGURED' ? 'Configured' : 'Deployment required'}</strong></div>
             </div>
             <div className="policy-grid">
               <div className="policy-editor-card">
-                <div className="card-header"><h3 className="card-title"><Icon name="lock" size={18} /> Enforced controls</h3><button className="btn btn-primary btn-sm" disabled={policySaving} onClick={() => savePolicy({ owner: policy.owner, reviewDate: policy.reviewDate, sessionDurationHours: policy.sessionDurationHours, vatRate: policy.vatRate })}>{policySaving ? 'Saving…' : 'Save changes'}</button></div>
+                <div className="card-header"><h3 className="card-title"><Icon name="lock" size={18} /> Enforced controls</h3><button className="btn btn-primary btn-sm" disabled={policySaving || requiresAdminMfa} onClick={() => savePolicy({ owner: policy.owner, reviewDate: policy.reviewDate, sessionDurationHours: policy.sessionDurationHours, vatRate: policy.vatRate, controls: policy.controls })}>{policySaving ? 'Saving…' : 'Save changes'}</button></div>
                 <div className="policy-form-grid"><label className="form-label">VAT rate (%)<input className="form-input" type="number" min="0" max="100" step="0.1" value={policy.vatRate} onChange={(e) => setPolicy({ ...policy, vatRate: Number(e.target.value) })} /></label><label className="form-label">Session duration (hours)<input className="form-input" type="number" min="1" max="24" value={policy.sessionDurationHours} onChange={(e) => setPolicy({ ...policy, sessionDurationHours: Number(e.target.value) })} /></label><label className="form-label">Owner<input className="form-input" value={policy.owner} onChange={(e) => setPolicy({ ...policy, owner: e.target.value })} /></label><label className="form-label">Next review date<input className="form-input" type="date" value={policy.reviewDate} onChange={(e) => setPolicy({ ...policy, reviewDate: e.target.value })} /></label></div>
-                <p className="policy-help">The administrator decides whether each control is enforced, recommended, deployment-dependent, or not required.</p><div className="policy-control-list">{policy.controls.map((control) => <div className="policy-control-row" key={control.id}><div><strong>{control.name}</strong><span>{control.description}</span></div><select className="form-input policy-status-select" value={control.status} onChange={(e) => setPolicy({ ...policy, controls: policy.controls.map((item) => item.id === control.id ? { ...item, status: e.target.value } : item), password: control.id === 'first-login-password' ? { ...policy.password, firstLoginChangeRequired: e.target.value === 'ENFORCED' } : policy.password })}><option value="ENFORCED">Enforced</option><option value="RECOMMENDED">Recommended</option><option value="REQUIRES_DEPLOYMENT">Requires deployment</option><option value="DISABLED">Not required</option></select></div>)}</div>
+                <p className="policy-help">Operational controls take effect in the API. TLS must be configured at the deployment edge and cannot be enabled from this form.</p>
+                <div className="policy-control-list">
+                  {policy.controls.map((control) => (
+                    <div className="policy-control-row" key={control.id}>
+                      <div><strong>{control.name}</strong><span>{control.description}</span></div>
+                      {control.id === 'tls-edge' ? (
+                        <span className={`badge ${policy.tlsStatus === 'CONFIGURED' ? 'badge-success' : 'badge-warning'}`}>{policy.tlsStatus === 'CONFIGURED' ? 'Configured at deployment edge' : 'Requires deployment'}</span>
+                      ) : (
+                        <select
+                          className="form-input policy-status-select"
+                          value={control.status}
+                          onChange={(e) => setPolicy({
+                            ...policy,
+                            controls: policy.controls.map((item) => item.id === control.id ? { ...item, status: e.target.value } : item),
+                          })}
+                        >
+                          <option value="ENFORCED">Enforced</option>
+                          <option value="RECOMMENDED">Recommended</option>
+                          <option value="REQUIRES_DEPLOYMENT">Requires deployment</option>
+                          <option value="DISABLED">Not required</option>
+                        </select>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="policy-side-card"><h3 className="card-title"><Icon name="key" size={18} /> Password requirements</h3><div className="policy-stat-grid"><span>Minimum length</span><strong>{policy.password.minimumLength} characters</strong><span>Uppercase</span><strong>{policy.password.requireUppercase ? 'Required' : 'Optional'}</strong><span>Lowercase</span><strong>{policy.password.requireLowercase ? 'Required' : 'Optional'}</strong><span>Number</span><strong>{policy.password.requireNumber ? 'Required' : 'Optional'}</strong><span>Special character</span><strong>{policy.password.requireSpecial ? 'Required' : 'Optional'}</strong><span>First-login change</span><strong>{policy.password.firstLoginChangeRequired ? 'Required' : 'Optional'}</strong></div><div className="policy-section-label">Deployment requirements</div><div className={`policy-deployment ${policy.tlsStatus === 'CONFIGURED' ? 'is-ready' : 'is-pending'}`}><Icon name={policy.tlsStatus === 'CONFIGURED' ? 'check-circle' : 'alert-triangle'} size={18} /><span><strong>TLS at trusted edge</strong><small>{policy.tlsStatus === 'CONFIGURED' ? 'HTTPS termination is configured.' : 'Configure HTTPS at the reverse proxy or load balancer.'}</small></span></div><div className="policy-section-label">Version history</div>{policy.history.slice(0, 4).map((entry) => <div className="policy-history-row" key={`${entry.version}-${entry.changedAt}`}><strong>v{entry.version}</strong><span>{entry.summary}</span><small>{entry.changedAt.slice(0, 10)}</small></div>)}</div>
             </div>
           </div>}
-          {policy && <div className="card policy-admin-options"><div className="card-header"><h3 className="card-title"><Icon name="settings" size={18} /> Administrator choices</h3><button className="btn btn-primary btn-sm" disabled={policySaving} onClick={() => savePolicy({ owner: policy.owner, reviewDate: policy.reviewDate, sessionDurationHours: policy.sessionDurationHours, vatRate: policy.vatRate, tlsStatus: policy.tlsStatus, password: policy.password, controls: policy.controls })}>{policySaving ? 'Saving…' : 'Save all policy choices'}</button></div><p className="policy-help">Choose which password requirements apply to new accounts. Changes are versioned and take effect after saving.</p><div className="policy-option-grid"><label className="form-label">Minimum password length<input className="form-input" type="number" min="6" max="64" value={policy.password.minimumLength} onChange={(e) => setPolicy({ ...policy, password: { ...policy.password, minimumLength: Number(e.target.value) } })} /></label>{[['requireUppercase', 'Uppercase required'], ['requireLowercase', 'Lowercase required'], ['requireNumber', 'Number required'], ['requireSpecial', 'Special character required'], ['firstLoginChangeRequired', 'First-login change required']].map(([key, label]) => <label className="policy-option-row" key={key}><span>{label}</span><input type="checkbox" checked={policy.password[key]} onChange={(e) => setPolicy({ ...policy, password: { ...policy.password, [key]: e.target.checked } })} /></label>)}<label className="form-label">TLS deployment status<select className="form-input" value={policy.tlsStatus} onChange={(e) => setPolicy({ ...policy, tlsStatus: e.target.value })}><option value="CONFIGURED">Configured</option><option value="REQUIRES_DEPLOYMENT">Requires deployment</option></select></label></div></div>}
-          <div className="policy-overview card">
-            <div><span className="badge badge-success">Enforced baseline</span><h3>Security & operational controls</h3><p>Policy version 1.3 · Owner: System Administration · Review cycle: quarterly</p></div>
-            <div className="policy-overview-meta"><span>Last reviewed</span><strong>11 Oct 2026</strong><span>Change history</span><strong>Available in Activity Log</strong></div>
-          </div>
-          <div className="grid-cols-2">
-          <div className="card">
-            <h3 className="card-title" style={{ marginBottom: '1rem' }}>
-              <Icon name="lock" size={18} /> Password & Access Governance Policy
-            </h3>
-            <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.875rem' }}>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Enforce Mandatory First-Time Password Change:</strong> Enabled for all newly registered staff.</span>
-              </li>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Complexity:</strong> Minimum 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 symbol.</span>
-              </li>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Session Management:</strong> Stateless HS256 JWT tokens with an 8-hour expiration.</span>
-              </li>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Transport Security:</strong> Configure TLS at a trusted reverse proxy; the API does not terminate TLS itself.</span>
-              </li>
-            </ul>
-          </div>
-
-          <div className="card">
-            <h3 className="card-title" style={{ marginBottom: '1rem' }}>
-              <Icon name="dollar-sign" size={18} /> Fiscal & Inventory Rules (RSA Regulatory)
-            </h3>
-            <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.875rem' }}>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Value Added Tax (VAT):</strong> 15.0% South African statutory standard rate.</span>
-              </li>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Currency Standard:</strong> South African Rand (ZAR / R).</span>
-              </li>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Negative Inventory Prevention:</strong> Application validation rejects sales exceeding available stock.</span>
-              </li>
-              <li style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Icon name="check-circle" size={16} className="text-success" />
-                <span><strong>Returns Policy:</strong> 2-step verification restores inventory and prevents ghost stock.</span>
-              </li>
-            </ul>
-          </div>
-          </div>
+          {policy && <div className="card policy-admin-options">
+            <div className="card-header">
+              <h3 className="card-title"><Icon name="settings" size={18} /> Administrator choices</h3>
+              <button className="btn btn-primary btn-sm" disabled={policySaving || requiresAdminMfa} onClick={() => savePolicy({
+                owner: policy.owner,
+                reviewDate: policy.reviewDate,
+                sessionDurationHours: policy.sessionDurationHours,
+                vatRate: policy.vatRate,
+                password: policy.password,
+                controls: policy.controls,
+              })}>{policySaving ? 'Saving…' : 'Save all policy choices'}</button>
+            </div>
+            <p className="policy-help">Company currency and timezone are used across operational displays; amounts are relabeled, not converted. Password rules apply to new and changed passwords. Session duration takes effect on the next sign-in. TLS is managed by your deployment proxy or load balancer.</p>
+            <div className="policy-option-grid">
+              <label className="form-label">Minimum password length<input className="form-input" type="number" min="6" max="64" value={policy.password.minimumLength} onChange={(e) => setPolicy({ ...policy, password: { ...policy.password, minimumLength: Number(e.target.value) } })} /></label>
+              {[
+                ['requireUppercase', 'Uppercase required'],
+                ['requireLowercase', 'Lowercase required'],
+                ['requireNumber', 'Number required'],
+                ['requireSpecial', 'Special character required'],
+              ].map(([key, label]) => (
+                <label className="policy-option-row" key={key}>
+                  <span>{label}</span>
+                  <input type="checkbox" checked={policy.password[key]} onChange={(e) => setPolicy({ ...policy, password: { ...policy.password, [key]: e.target.checked } })} />
+                </label>
+              ))}
+              <div className="policy-option-row">
+                <span>TLS deployment status</span>
+                <strong>{policy.tlsStatus === 'CONFIGURED' ? 'Configured at deployment edge' : 'Requires deployment'}</strong>
+              </div>
+            </div>
+          </div>}
+          {requiresAdminMfa && (
+            <div className="card policy-admin-options" role="region" aria-label="Required administrator MFA enrollment">
+              <div className="card-header">
+                <h3 className="card-title"><Icon name="shield-check" size={18} /> Administrator MFA enrollment required</h3>
+                {!mfaEnrollment && <button className="btn btn-primary btn-sm" disabled={mfaSaving} onClick={startMfaEnrollment}>{mfaSaving ? 'Starting…' : 'Set up authenticator'}</button>}
+              </div>
+              <p className="policy-help">Add this account to an authenticator app using the secret below, then verify its six-digit code. This policy requires enrollment; it does not require a code at every sign-in.</p>
+              {mfaEnrollment && (
+                <div className="policy-option-grid">
+                  <label className="form-label">Authenticator setup key<input className="form-input form-input-mono" readOnly value={mfaEnrollment.secret} /></label>
+                  <label className="form-label">Six-digit verification code<input className="form-input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))} /></label>
+                  <div><button className="btn btn-primary btn-sm" disabled={mfaSaving || mfaCode.length !== 6} onClick={verifyMfaEnrollment}>{mfaSaving ? 'Verifying…' : 'Verify and enable MFA'}</button></div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

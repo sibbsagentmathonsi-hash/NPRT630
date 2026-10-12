@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from '../common/Icons';
 import { BrandLogo } from '../common/BrandLogo';
+import { apiFetch as fetch, setCsrfToken } from '../../utils/apiClient';
+
+const turnstileSiteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY;
 
 const readResponseJson = async (response) => {
   const text = await response.text();
@@ -23,7 +26,6 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
   const [infoMessage, setInfoMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [setupSuccessUser, setSetupSuccessUser] = useState(null);
-  const [setupToken, setSetupToken] = useState('');
   const [passwordPolicy, setPasswordPolicy] = useState({ minimumLength: 8, requireUppercase: true, requireLowercase: true, requireNumber: true, requireSpecial: true });
   const [companyChoices, setCompanyChoices] = useState([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
@@ -35,6 +37,98 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
   const [sendingCode, setSendingCode] = useState(false);
   const [verifyingCode, setVerifyingCode] = useState(false);
   const [codeCountdown, setCodeCountdown] = useState(0);
+  const turnstileContainerRef = useRef(null);
+  const turnstileWidgetIdRef = useRef(null);
+  const pendingChallengeRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen || !turnstileSiteKey) return undefined;
+    let disposed = false;
+
+    const rejectPendingChallenge = (message) => {
+      const pending = pendingChallengeRef.current;
+      if (!pending) return;
+      pendingChallengeRef.current = null;
+      clearTimeout(pending.timer);
+      pending.reject(new Error(message));
+    };
+
+    const renderWidget = () => {
+      if (disposed || !turnstileContainerRef.current || !window.turnstile || turnstileWidgetIdRef.current !== null) return;
+      turnstileWidgetIdRef.current = window.turnstile.render(turnstileContainerRef.current, {
+        sitekey: turnstileSiteKey,
+        action: 'auth',
+        execution: 'execute',
+        appearance: 'interaction-only',
+        callback: (token) => {
+          const pending = pendingChallengeRef.current;
+          if (!pending) return;
+          pendingChallengeRef.current = null;
+          clearTimeout(pending.timer);
+          pending.resolve(token);
+          window.turnstile.reset(turnstileWidgetIdRef.current);
+        },
+        'error-callback': () => rejectPendingChallenge('Cloudflare could not complete the security check. Please try again.'),
+        'expired-callback': () => rejectPendingChallenge('The security check expired. Please try again.'),
+      });
+    };
+
+    const scriptId = 'cloudflare-turnstile-api';
+    let script = document.getElementById(scriptId);
+    if (window.turnstile) {
+      renderWidget();
+    } else {
+      if (!script) {
+        script = document.createElement('script');
+        script.id = scriptId;
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+        script.async = true;
+        script.defer = true;
+        document.head.appendChild(script);
+      }
+      script.addEventListener('load', renderWidget);
+    }
+
+    return () => {
+      disposed = true;
+      script?.removeEventListener('load', renderWidget);
+      rejectPendingChallenge('The sign-in dialog was closed before the security check completed.');
+      if (turnstileWidgetIdRef.current !== null && window.turnstile) {
+        window.turnstile.remove(turnstileWidgetIdRef.current);
+      }
+      turnstileWidgetIdRef.current = null;
+    };
+  }, [isOpen]);
+
+  const requestTurnstileToken = () => {
+    if (!turnstileSiteKey) {
+      if (import.meta.env.PROD) {
+        return Promise.reject(new Error('Bot protection is not configured for this site. Contact your administrator.'));
+      }
+      return Promise.resolve(undefined);
+    }
+    if (!window.turnstile || turnstileWidgetIdRef.current === null) {
+      return Promise.reject(new Error('Cloudflare security check did not load. Refresh the page and try again.'));
+    }
+    if (pendingChallengeRef.current) {
+      return Promise.reject(new Error('A security check is already in progress.'));
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingChallengeRef.current = null;
+        reject(new Error('Cloudflare security check timed out. Please try again.'));
+      }, 30000);
+      pendingChallengeRef.current = { resolve, reject, timer };
+      try {
+        window.turnstile.execute(turnstileWidgetIdRef.current);
+      } catch {
+        clearTimeout(timer);
+        pendingChallengeRef.current = null;
+        reject(new Error('Cloudflare security check could not start. Please try again.'));
+      }
+    });
+  };
 
   useEffect(() => {
     let timer;
@@ -55,7 +149,6 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       setError('');
       setInfoMessage('');
       setSetupSuccessUser(null);
-      setSetupToken('');
       setEmailVerifyIdentifier('');
       setEmailVerifyCode('');
       setEmailSentData(null);
@@ -88,10 +181,15 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     setLoading(true);
 
     try {
+      const turnstileToken = await requestTurnstileToken();
       const res = await fetch(`${apiBase}/api/auth/lookup-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: emailVerifyIdentifier || employeeId, companyId: selectedCompanyId || undefined }),
+        body: JSON.stringify({
+          email: emailVerifyIdentifier || employeeId,
+          companyId: selectedCompanyId || undefined,
+          turnstileToken,
+        }),
       });
       const data = await readResponseJson(res);
       if (!res.ok) {
@@ -111,7 +209,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
 
       if (!user.emailVerified) {
         setAuthTab('verify-email');
-        await handleSendCode(user.email);
+        await handleSendCode(user.email, user.companyId);
       } else {
         setAuthTab('login');
         setInfoMessage(user.isFirstLogin ? 'Email confirmed. Enter the temporary password supplied by your administrator to begin setup.' : 'Email confirmed. Enter your password to continue.');
@@ -144,35 +242,45 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     setLoading(true);
 
     try {
+      const turnstileToken = await requestTurnstileToken();
       const res = await fetch(`${apiBase}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ employeeId, password, companyId: selectedCompanyId || setupSuccessUser?.companyId }),
+        body: JSON.stringify({
+          email: emailVerifyIdentifier || setupSuccessUser?.email || employeeId,
+          password,
+          companyId: selectedCompanyId || setupSuccessUser?.companyId,
+          turnstileToken,
+        }),
       });
 
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Authentication failed');
       }
+      setCsrfToken(data.csrfToken);
 
       if (isAdminAccess && data.user?.role !== 'ADMIN') {
+        await fetch(`${apiBase}/api/auth/logout`, { method: 'POST' });
+        setCsrfToken(null);
         throw new Error('Only administrator accounts can sign in to the admin portal.');
       }
 
       if (!isAdminAccess && data.user?.role === 'ADMIN') {
+        await fetch(`${apiBase}/api/auth/logout`, { method: 'POST' });
+        setCsrfToken(null);
         throw new Error('Admin accounts must sign in through the admin portal.');
       }
 
       if (data.requiresFirstPasswordSetup) {
         setIsFirstTimeMode(true);
         setSetupSuccessUser(data.user);
-        setSetupToken(data.token);
         setEmailVerifyIdentifier(data.user.employeeId);
         setLoading(false);
         return;
       }
 
-      onLoginSuccess(data.user, data.token);
+      onLoginSuccess(data.user, data.csrfToken);
       onClose();
     } catch (err) {
       setError(err.message);
@@ -195,12 +303,9 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     try {
       const res = await fetch(`${apiBase}/api/auth/set-first-password`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${setupToken}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          employeeId: setupSuccessUser?.employeeId || employeeId,
+          email: setupSuccessUser?.email || emailVerifyIdentifier || employeeId,
           newPassword,
         }),
       });
@@ -209,16 +314,19 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
       if (!res.ok) {
         throw new Error(data.error || 'Password setup failed');
       }
+      setCsrfToken(data.csrfToken);
 
       if (isAdminAccess && data.user?.role !== 'ADMIN') {
         throw new Error('Only administrator accounts can enter the admin portal.');
       }
 
       if (!isAdminAccess && data.user?.role === 'ADMIN') {
+        await fetch(`${apiBase}/api/auth/logout`, { method: 'POST' });
+        setCsrfToken(null);
         throw new Error('Admin accounts must use the admin portal.');
       }
 
-      onLoginSuccess(data.user, data.token);
+      onLoginSuccess(data.user, data.csrfToken);
       onClose();
     } catch (err) {
       setError(err.message);
@@ -228,7 +336,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
   };
 
   // Send Email Verification Code
-  const handleSendCode = async (targetId) => {
+  const handleSendCode = async (targetId, companyId) => {
     const target = targetId || emailVerifyIdentifier || employeeId || setupSuccessUser?.employeeId;
     if (!target) {
       setError('Please enter your Employee ID or email address first');
@@ -240,10 +348,15 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     setSendingCode(true);
 
     try {
+      const turnstileToken = await requestTurnstileToken();
       const res = await fetch(`${apiBase}/api/auth/send-verification-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: target }),
+        body: JSON.stringify({
+          identifier: target,
+          companyId: companyId || selectedCompanyId || setupSuccessUser?.companyId,
+          turnstileToken,
+        }),
       });
 
       const data = await res.json();
@@ -275,10 +388,16 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
     setVerifyingCode(true);
 
     try {
+      const turnstileToken = await requestTurnstileToken();
       const res = await fetch(`${apiBase}/api/auth/verify-email-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: target, code: emailVerifyCode.trim() }),
+        body: JSON.stringify({
+          identifier: target,
+          code: emailVerifyCode.trim(),
+          companyId: selectedCompanyId || setupSuccessUser?.companyId,
+          turnstileToken,
+        }),
       });
 
       const data = await res.json();
@@ -291,17 +410,22 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
         setSetupSuccessUser({ ...setupSuccessUser, emailVerified: true });
         setAuthTab('login');
         setInfoMessage(setupSuccessUser.isFirstLogin ? 'Email confirmed. Enter the temporary password supplied by your administrator to begin setup.' : 'Email confirmed. Enter your password to continue.');
-      } else if (data.user && data.token) {
+      } else if (data.user && data.csrfToken) {
+        setCsrfToken(data.csrfToken);
         if (isAdminAccess && data.user.role !== 'ADMIN') {
+          await fetch(`${apiBase}/api/auth/logout`, { method: 'POST' });
+          setCsrfToken(null);
           throw new Error('Only administrator accounts can enter the admin portal.');
         }
 
         if (!isAdminAccess && data.user.role === 'ADMIN') {
+          await fetch(`${apiBase}/api/auth/logout`, { method: 'POST' });
+          setCsrfToken(null);
           throw new Error('Admin accounts must use the admin portal.');
         }
 
         setTimeout(() => {
-          onLoginSuccess(data.user, data.token);
+          onLoginSuccess(data.user, data.csrfToken);
           onClose();
         }, 1200);
       }
@@ -318,6 +442,12 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
         <button type="button" className="modal-close" onClick={onClose} aria-label="Close login dialog" title="Close">
           <Icon name="x" size={18} />
         </button>
+        {turnstileSiteKey && (
+          <div className="auth-turnstile">
+            <div ref={turnstileContainerRef} />
+            <span>Cloudflare will run a brief security check when you continue.</span>
+          </div>
+        )}
         {!isFirstTimeMode ? (
           <div>
             <div className="auth-modal-header">
@@ -334,7 +464,6 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
               <span className={authTab === 'login' ? 'is-active' : ''}>3&nbsp; Continue</span>
               {authTab !== 'email' && <button type="button" className="auth-change-email" onClick={() => { setAuthTab('email'); setError(''); setInfoMessage(''); setSetupSuccessUser(null); setEmployeeId(''); setPassword(''); setEmailVerifyIdentifier(''); setEmailSentData(null); }}>Change email</button>}
             </div>
-
             {error && (
               <div
                 style={{
@@ -416,7 +545,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                 <form onSubmit={handleLogin} autoComplete="off">
                   <div className="form-group">
                     <label className="form-label">Verified account</label>
-                    <div className="auth-account-chip"><span className="employee-id-badge form-input-mono">{emailVerifyIdentifier}</span><span>{setupSuccessUser?.employeeId}</span></div>
+                    <div className="auth-account-chip"><span>{emailVerifyIdentifier}</span></div>
                   </div>
 
                   <div className="form-group">
@@ -494,29 +623,6 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                     </button>
                   </div>
                 </div>
-
-                {emailSentData && (
-                  <div style={{ background: 'var(--bg-subtle)', padding: '12px', borderRadius: 'var(--radius-md)', marginBottom: '1rem', border: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                      <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>Code sent to: <strong>{emailSentData.email}</strong></span>
-                      <span className="badge badge-success">Active</span>
-                    </div>
-
-                    {emailSentData.code && (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--purple-light)', padding: '6px 10px', borderRadius: '6px', fontSize: '0.75rem' }}>
-                        <span><strong>Dev Preview Code:</strong> <code className="form-input-mono">{emailSentData.code}</code></span>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '2px 6px', fontSize: '0.6875rem' }}
-                          onClick={() => setEmailVerifyCode(emailSentData.code)}
-                        >
-                          Auto-Fill
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 <form onSubmit={handleVerifyEmailCode}>
                   <div className="form-group">
@@ -621,7 +727,7 @@ export const WorkerAuthModal = ({ isOpen, onClose, onLoginSuccess, demoUsers = [
                       className="btn btn-secondary btn-sm"
                       style={{ flex: 1 }}
                       disabled={sendingCode || codeCountdown > 0}
-                      onClick={() => handleSendCode(setupSuccessUser?.employeeId)}
+                      onClick={() => handleSendCode(setupSuccessUser?.email, setupSuccessUser?.companyId)}
                     >
                       {sendingCode ? 'Sending...' : codeCountdown > 0 ? `Resend in ${codeCountdown}s` : 'Send Code to Email 📨'}
                     </button>

@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { hydrateUsers, users, validatePasswordStrength } from '../modules/auth/auth';
 import { inventoryItems } from '../inventory';
 import { loadEnvironment } from './environment';
+import { getDatabaseSslOptions } from './databaseSecurity';
 import { sequelize } from './sequelize';
 import { DEFAULT_COMPANY_ID, companies, defaultCompany } from './tenancy';
 import { hydratePolicies } from './policies';
@@ -28,6 +29,7 @@ const ensureDatabaseExists = async (): Promise<void> => {
     user: dbUser,
     password: dbPassword,
     database: 'postgres',
+    ssl: getDatabaseSslOptions(),
   });
 
   try {
@@ -51,7 +53,7 @@ export const connectDatabase = async (): Promise<boolean> => {
     await ensureDatabaseExists();
 
     // Step 2: Import models
-    const [{ ProductModel, seedProducts }, { SupplierModel, seedSuppliers }, { StockMovementModel, seedStockMovements }, domainModels] = await Promise.all([
+    const [{ ProductModel, seedProducts }, { SupplierModel, removeSampleSuppliers }, { StockMovementModel, seedStockMovements }, domainModels] = await Promise.all([
       import('../models/Product'),
       import('../models/Supplier'),
       import('../models/StockMovement'),
@@ -88,6 +90,7 @@ export const connectDatabase = async (): Promise<boolean> => {
     hydratePolicies((await CompanyPolicyModel.findAll()).map((record) => record.toJSON() as any));
     await ProductModel.sync({ alter: true });
     await SupplierModel.sync({ alter: true });
+    await removeSampleSuppliers();
     await StockMovementModel.sync({ alter: true });
     await RoleModel.sync({ alter: true });
     await UserModel.sync({ alter: true });
@@ -186,7 +189,6 @@ export const connectDatabase = async (): Promise<boolean> => {
 
     // Step 4: Seed initial data if empty
     await seedProducts();
-    await seedSuppliers();
     await seedStockMovements();
 
     const {
@@ -197,7 +199,7 @@ export const connectDatabase = async (): Promise<boolean> => {
       hydrateSalesReceipts,
       hydrateStockMovements,
     } = await import('../inventory');
-    const { hydratePurchaseOrders, hydrateSupplierReviews } = await import('../modules/procurement/procurement');
+    const { hydratePurchaseOrders, hydrateSupplierReviews, hydrateSuppliers } = await import('../modules/procurement/procurement');
     const storedProducts = await ProductModel.findAll();
     hydrateProducts(storedProducts.map((product) => product.toJSON() as any));
     const storedInventoryItems = await InventoryItemModel.findAll();
@@ -207,10 +209,11 @@ export const connectDatabase = async (): Promise<boolean> => {
       hydrateInventoryItems(storedInventoryItems.map((item) => item.toJSON() as any));
     }
 
-    const [storedUsers, storedSales, storedMovements, storedPurchaseOrders, storedSupplierReviews, storedCustomerOrders, storedCycleCounts] = await Promise.all([
+    const [storedUsers, storedSales, storedMovements, storedSuppliers, storedPurchaseOrders, storedSupplierReviews, storedCustomerOrders, storedCycleCounts] = await Promise.all([
       UserModel.findAll(),
       SaleModel.findAll({ include: [{ model: SaleItemModel, as: 'items' }] }),
       StockMovementModel.findAll({ order: [['id', 'ASC']] }),
+      SupplierModel.findAll({ order: [['id', 'ASC']] }),
       PurchaseOrderModel.findAll({ include: [{ model: PurchaseOrderItemModel, as: 'items' }] }),
       SupplierReviewModel.findAll({ order: [['createdAt', 'DESC']] }),
       CustomerOrderModel.findAll({ include: [{ model: CustomerOrderItemModel, as: 'items' }] }),
@@ -222,6 +225,14 @@ export const connectDatabase = async (): Promise<boolean> => {
     hydrateUsers(storedUsers.map((record) => record.toJSON() as any));
     hydrateSalesReceipts(storedSales.map((record) => record.toJSON() as any));
     hydrateStockMovements(storedMovements.map((record) => record.toJSON() as any));
+    hydrateSuppliers(storedSuppliers.map((record) => ({
+      id: Number(record.id),
+      companyId: String(record.companyId ?? DEFAULT_COMPANY_ID),
+      name: String(record.name),
+      contact: String(record.contact),
+      leadTimeDays: Number(record.leadTimeDays),
+      isArchived: Boolean(record.isArchived),
+    })));
     hydratePurchaseOrders(storedPurchaseOrders.map((record) => {
       const order = record.toJSON() as any;
       const item = order.items?.[0];

@@ -4,11 +4,10 @@ import { WorkerAuthModal } from '../components/auth/WorkerAuthModal';
 import { BrandLogo } from '../components/common/BrandLogo';
 import { AppSidebar } from '../components/common/AppSidebar';
 import { Icon } from '../components/common/Icons';
+import { apiFetch as fetch, clearCsrfToken, setCsrfToken } from '../utils/apiClient';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
-const ADMIN_TOKEN_KEY = 'syncstock_admin_token';
 const ADMIN_USER_KEY = 'syncstock_admin_user';
-const WORKER_TOKEN_KEY = 'syncstock_worker_token';
 const WORKER_USER_KEY = 'syncstock_worker_user';
 
 const normalizeEmployeeId = (value) => {
@@ -43,13 +42,14 @@ export default function AdminApp() {
   const clearAdminSession = () => {
     setCurrentUser(null);
     setToken('');
-    localStorage.removeItem(ADMIN_TOKEN_KEY);
+    clearCsrfToken();
+    localStorage.removeItem('syncstock_admin_token');
     localStorage.removeItem(ADMIN_USER_KEY);
-    localStorage.removeItem(WORKER_TOKEN_KEY);
+    localStorage.removeItem('syncstock_worker_token');
     localStorage.removeItem(WORKER_USER_KEY);
   };
 
-  const handleLogin = async (user, newToken) => {
+  const handleLogin = async (user, csrfToken) => {
     if (user.role !== 'ADMIN') {
       showToast('Only administrator accounts can use the admin portal.', 'error');
       return;
@@ -57,17 +57,22 @@ export default function AdminApp() {
 
     const normalizedUser = normalizeStoredUser(user);
 
+    setCsrfToken(csrfToken);
     setCurrentUser(normalizedUser);
-    setToken(newToken);
-    localStorage.setItem(ADMIN_TOKEN_KEY, newToken);
-    localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(normalizedUser));
+    setToken(true);
     showToast(`Logged in as ${normalizedUser.name} (${normalizedUser.employeeId})`, 'success');
   };
 
-  const handleLogout = () => {
-    clearAdminSession();
-    setShowAuthModal(true);
-    showToast('You have signed out of the admin portal', 'info');
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' });
+      showToast('You have signed out of the admin portal', 'info');
+    } catch {
+      showToast('The server did not confirm sign-out. Close this browser if it is a shared device.', 'error');
+    } finally {
+      clearAdminSession();
+      setShowAuthModal(true);
+    }
   };
 
   const handleSessionExpired = () => {
@@ -92,33 +97,19 @@ export default function AdminApp() {
   }, []);
 
   useEffect(() => {
-    const savedToken = localStorage.getItem(ADMIN_TOKEN_KEY);
-    const savedUser = localStorage.getItem(ADMIN_USER_KEY);
-    if (savedToken && savedUser) {
-      try {
-        const parsedUser = normalizeStoredUser(JSON.parse(savedUser));
-        if (parsedUser.role !== 'ADMIN') {
-          clearAdminSession();
-          return;
-        }
-        setToken(savedToken);
-        setCurrentUser(parsedUser);
-        localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(parsedUser));
-        fetch(`${API_BASE}/api/admin/platform-status`, { headers: { Authorization: `Bearer ${savedToken}` } })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((status) => {
-            if (!status) return;
-            setCurrentUser((user) => {
-              const refreshed = { ...user, isPlatformAdmin: Boolean(status.isPlatformAdmin) };
-              localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(refreshed));
-              return refreshed;
-            });
-          })
-          .catch(() => {});
-      } catch {
-        clearAdminSession();
-      }
-    }
+    localStorage.removeItem('syncstock_admin_token');
+    localStorage.removeItem('syncstock_worker_token');
+    localStorage.removeItem(ADMIN_USER_KEY);
+    localStorage.removeItem(WORKER_USER_KEY);
+    fetch(`${API_BASE}/api/auth/session`)
+      .then(async (res) => res.ok ? res.json() : null)
+      .then((session) => {
+        if (session?.user?.role !== 'ADMIN') return;
+        setCsrfToken(session.csrfToken);
+        setToken(true);
+        setCurrentUser(normalizeStoredUser(session.user));
+      })
+      .catch(() => undefined);
   }, []);
 
   return (
@@ -160,9 +151,6 @@ export default function AdminApp() {
               </div>
               <div className="header-user-meta">
                 <div className="header-user-name">{currentUser.name}</div>
-                <div className="header-user-role">
-                  <span className="form-input-mono employee-id-inline">{currentUser.employeeId}</span> · ADMIN
-                </div>
               </div>
               <button
                 className="btn btn-secondary btn-sm header-signout"
@@ -191,7 +179,17 @@ export default function AdminApp() {
         {currentUser && <AppSidebar role="ADMIN" platformAdmin={currentUser.isPlatformAdmin} activeItem={activeNav} onNavigate={setActiveNav} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} />}
         <main className={`app-main ${currentUser ? 'has-sidebar' : ''}`}>
         {currentUser?.role === 'ADMIN' ? (
-          <AdminPortal apiBase={API_BASE} token={token} currentUser={currentUser} onNotify={showToast} onSessionExpired={handleSessionExpired} initialTab={activeNav} />
+          <AdminPortal
+            apiBase={API_BASE}
+            token={token}
+            currentUser={currentUser}
+            onUserUpdate={(user) => {
+              setCurrentUser(user);
+            }}
+            onNotify={showToast}
+            onSessionExpired={handleSessionExpired}
+            initialTab={activeNav}
+          />
         ) : (
           <div className="welcome-panel admin-welcome">
             <div className="welcome-grid" aria-hidden="true" />
