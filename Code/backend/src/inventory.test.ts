@@ -160,6 +160,31 @@ test('multi-line sale validates every line before updating stock and generates r
   assert.equal(milk.stock, milkStockBefore);
   assert.equal(bread.stock, breadStockBefore);
 
+  const duplicateProduct = createProduct({
+    sku: 'DUP-TEST-001',
+    barcode: '6001001000123',
+    name: 'Duplicate Line Test Item',
+    category: 'Office Supplies',
+    supplierId: 1,
+    stock: 5,
+    reorderPoint: 1,
+    reorderQuantity: 5,
+    unitCost: 10,
+    price: 20,
+    warehouseId: 'JHB-01',
+    binLocation: 'DUP-01',
+  });
+
+  assert.throws(
+    () =>
+      createSaleTransaction([
+        { productId: duplicateProduct.id, quantity: 3 },
+        { productId: duplicateProduct.id, quantity: 3 },
+      ], { paymentMethod: 'CASH', tenderAmount: 100 }),
+    /Insufficient stock/
+  );
+  assert.equal(findProductById(duplicateProduct.id)?.stock, 5);
+
   // Valid multi-line checkout
   const saleResult = createSaleTransaction(
     [

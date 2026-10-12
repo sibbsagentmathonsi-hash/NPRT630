@@ -1132,6 +1132,7 @@ export const createSaleTransaction = (
 
   const lines: SaleLine[] = [];
   const movements: StockMovement[] = [];
+  const quantitiesByProduct = new Map<number, number>();
 
   for (const item of items) {
     if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
@@ -1143,10 +1144,19 @@ export const createSaleTransaction = (
       throw new Error(`Product not found: ID ${item.productId}`);
     }
 
+    quantitiesByProduct.set(item.productId, (quantitiesByProduct.get(item.productId) ?? 0) + item.quantity);
+  }
+
+  for (const [productId, quantity] of quantitiesByProduct) {
+    const product = companyProduct((p) => p.id === productId && p.isActive);
+    if (!product) {
+      throw new Error(`Product not found: ID ${productId}`);
+    }
+
     const available = getAvailableStock(product);
-    if (isPolicyEnforced('negative-inventory') && item.quantity > available) {
+    if (isPolicyEnforced('negative-inventory') && quantity > available) {
       throw new Error(
-        `Insufficient stock for ${product.name} (SKU: ${product.sku}). Requested: ${item.quantity}, Available: ${available}`
+        `Insufficient stock for ${product.name} (SKU: ${product.sku}). Requested: ${quantity}, Available: ${available}`
       );
     }
   }
